@@ -35,7 +35,7 @@ def synthesize_document(
     base = p.stem
     out_wav = Path(settings.output_dir) / f"{base}.wav"
 
-    if engine.backend in {"pyttsx3", "piper"}:
+    if engine.backend in {"pyttsx3", "piper", "parler"}:
         # Non-streaming path: synthesize whole text at once
         full_text = " ".join(
             (c if c.endswith((".", "!", "?", ":")) else c + ".")

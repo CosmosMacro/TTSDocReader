@@ -26,7 +26,11 @@ def synthesize_document(
     """
     p = Path(path)
     text = extract_text(p)
-    chunks = list(iter_chunks(text, max_chars=max_chars))
+    # Choose chunk length; Parler is heavy on CPU, keep chunks smaller
+    local_max = max_chars
+    if engine.backend == "parler":
+        local_max = min(max_chars, 300)
+    chunks = list(iter_chunks(text, max_chars=local_max))
     if not chunks:
         raise RuntimeError("No text extracted from the document.")
 

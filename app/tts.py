@@ -229,14 +229,14 @@ class OrpheusEngine:
             prompt_ids = tok(style_prompt, return_tensors="pt")["input_ids"]
             import torch
             with torch.no_grad():
-                out = model.generate(desc_ids, prompt_input_ids=prompt_ids)
+                gen = model.generate(desc_ids, prompt_input_ids=prompt_ids)
             # out is a FloatTensor of audio values or a ModelOutput with sequences=audio values
             try:
                 import numpy as np  # type: ignore
-                if hasattr(out, "sequences"):
-                    audio = out.sequences.squeeze().cpu().float().numpy()
+                if hasattr(gen, "sequences"):
+                    audio = gen.sequences.squeeze().cpu().float().numpy()
                 else:
-                    audio = out.squeeze().cpu().float().numpy()
+                    audio = gen.squeeze().cpu().float().numpy()
                 sr = int(getattr(model.audio_encoder.config, "sampling_rate", 24000))
                 import soundfile as sf  # type: ignore
                 sf.write(tmp_wav.as_posix(), audio if audio.ndim == 1 else audio[0], sr)

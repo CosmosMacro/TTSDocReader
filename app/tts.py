@@ -217,32 +217,31 @@ class OrpheusEngine:
                 raise RuntimeError(f"Piper synthesis failed: {stderr}") from e
         elif self.backend == "parler":
             try:
-                from parler_tts import ParlerTTS  # type: ignore
+                from transformers import AutoTokenizer  # type: ignore
+                from parler_tts import ParlerTTSForConditionalGeneration  # type: ignore
             except Exception as e:
                 raise RuntimeError("Parler backend unavailable. Install optional deps: pip install -r requirements-parler.txt") from e
-            # Initialize model (cached by HF)
-            tts = ParlerTTS.from_pretrained(settings.parler_model)
+            # Load model + tokenizer (weights cached by HF). Use CPU by default.
+            tok = AutoTokenizer.from_pretrained(settings.parler_model)
+            model = ParlerTTSForConditionalGeneration.from_pretrained(settings.parler_model)
+            desc_ids = tok(text, return_tensors="pt")["input_ids"]
             style_prompt = (voice or settings.voice or "").strip() or "A clear, natural French voice with expressive, warm tone."
-            # Synthesize; Parler returns audio float32 and sample rate
-            out_np = None
-            sr = getattr(tts, "sample_rate", 24000)
+            prompt_ids = tok(style_prompt, return_tensors="pt")["input_ids"]
+            import torch
+            with torch.no_grad():
+                out = model.generate(desc_ids, prompt_input_ids=prompt_ids)
+            # out is a FloatTensor of audio values or a ModelOutput with sequences=audio values
             try:
-                # Some versions expose tts.synthesize(text, prompt)
-                result = tts.synthesize(text, style_prompt)
-                # Accept both dict and array returns
-                if isinstance(result, dict) and "audio" in result:
-                    out_np = result["audio"]
-                    sr = int(result.get("sample_rate", sr))
+                import numpy as np  # type: ignore
+                if hasattr(out, "sequences"):
+                    audio = out.sequences.squeeze().cpu().float().numpy()
                 else:
-                    out_np = result
-            except Exception as e:
-                raise RuntimeError(f"Parler synthesis failed: {e}") from e
-            try:
+                    audio = out.squeeze().cpu().float().numpy()
+                sr = int(getattr(model.audio_encoder.config, "sampling_rate", 24000))
                 import soundfile as sf  # type: ignore
+                sf.write(tmp_wav.as_posix(), audio if audio.ndim == 1 else audio[0], sr)
             except Exception as e:
-                raise RuntimeError("Missing dependency 'soundfile'. Install with: pip install soundfile") from e
-            # Write via soundfile
-            sf.write(tmp_wav.as_posix(), out_np, sr)
+                raise RuntimeError(f"Parler synthesis failed during decode/write: {e}") from e
 
         try:
             tmp_wav.replace(out)

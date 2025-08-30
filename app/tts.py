@@ -224,12 +224,19 @@ class OrpheusEngine:
             # Load model + tokenizer (weights cached by HF). Use CPU by default.
             tok = AutoTokenizer.from_pretrained(settings.parler_model)
             model = ParlerTTSForConditionalGeneration.from_pretrained(settings.parler_model)
-            desc_ids = tok(text, return_tensors="pt")["input_ids"]
+            desc = tok(text, return_tensors="pt")
+            desc_ids = desc["input_ids"]
             style_prompt = (voice or settings.voice or "").strip() or "A clear, natural French voice with expressive, warm tone."
-            prompt_ids = tok(style_prompt, return_tensors="pt")["input_ids"]
+            prompt = tok(style_prompt, return_tensors="pt")
+            prompt_ids = prompt["input_ids"]
             import torch
             with torch.no_grad():
-                gen = model.generate(desc_ids, prompt_input_ids=prompt_ids)
+                gen = model.generate(
+                    desc_ids,
+                    attention_mask=desc.get("attention_mask"),
+                    prompt_input_ids=prompt_ids,
+                    prompt_attention_mask=prompt.get("attention_mask"),
+                )
             # out is a FloatTensor of audio values or a ModelOutput with sequences=audio values
             try:
                 import numpy as np  # type: ignore

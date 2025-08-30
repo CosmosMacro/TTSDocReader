@@ -87,6 +87,8 @@ INDEX_HTML = f"""
     .bar {{ height:100%; width:0%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .2s ease; }}
     .spinner {{ width:16px; height:16px; border:2px solid rgba(255,255,255,.6); border-top-color: #fff; border-radius:50%; display:inline-block; animation: spin 1s linear infinite; margin-left:.5rem; vertical-align: middle; }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    .cta {{ display:flex; flex-direction:column; align-items:center; gap:.75rem; margin: 8px 0 4px; }}
+    .btn-cta {{ font-size:1.05rem; padding:1rem 1.5rem; }}
     .output {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
     .audio {{ width: 100%; max-width: 420px; }}
     .error {{ color:#ef4444; font-weight:600; }}
@@ -116,6 +118,7 @@ INDEX_HTML = f"""
     </div>
     <p class='hint'>Convert PDF/DOCX/TXT/MD to audio. Default model: <code>{settings.model_name}</code></p>
     <form id='ttsForm' class='grid grid-wide' action='/synthesize' method='post' enctype='multipart/form-data'>
+      <input type='hidden' name='voice' id='voice' />
       <div class='card'>
         <h2 class='title'>
           <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M4 14v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3'/><path d='M7 10l5-5 5 5'/><path d='M12 15V5'/></svg>
@@ -147,16 +150,13 @@ INDEX_HTML = f"""
             <label>Voice (Piper)</label>
             <select id='pvoice'></select>
           </div>
+          <div id='ovoiceWrap'>
+            <label>Voice (Orpheus, optional)</label>
+            <input id='ovoice' type='text' placeholder='e.g., lea' />
+          </div>
         </div>
       </div>
-      <div class='card'>
-        <h2 class='title'>
-          <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M12 1v11a3 3 0 0 1-6 0V1'/><path d='M19 10a7 7 0 0 1-14 0'/><line x1='12' y1='19' x2='12' y2='23'/><line x1='8' y1='23' x2='16' y2='23'/></svg>
-          Voice
-        </h2>
-        <label>Voice (optional)</label>
-        <input name='voice' id='voice' type='text' placeholder='e.g., lea (Orpheus) or C:/path/to/fr_FR-voice.onnx (Piper)' />
-      </div>
+      
       <div class='card'>
         <h2 class='title'>
           <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 7 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg>
@@ -183,14 +183,9 @@ INDEX_HTML = f"""
             <input name='max_chars' id='max_chars' type='number' min='500' max='3000' value='1500' />
           </div>
         </div>
-        <div class='toolbar'>
-          <div class='progress' id='progress'><div class='bar' id='bar'></div></div>
-          <div class='actions'>
-            <button id='synthBtn' class='btn btn-accent' type='submit'>Synthesize</button>
-          </div>
-        </div>
+        
       </div>
-      <div class='card grid-wide'>
+      <div class='card'>
         <h2 class='title'>
           <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><polygon points='5 3 19 12 5 21 5 3'/></svg>
           Output
@@ -201,8 +196,12 @@ INDEX_HTML = f"""
             <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/></svg>
             Download
           </a>
-          <span id='status' class='hint'></span>
         </div>
+      </div>
+      <div class='cta grid-wide'>
+        <div class='progress' id='progress'><div class='bar' id='bar'></div></div>
+        <button id='synthBtn' class='btn btn-accent btn-cta' type='submit'>Synthesize</button>
+        <span id='status' class='hint'></span>
       </div>
     </form>
   </div>
@@ -213,6 +212,8 @@ INDEX_HTML = f"""
     const pvoiceWrap = $('#pvoiceWrap');
     const langEl = $('#lang');
     const pvoiceEl = $('#pvoice');
+    const ovoiceWrap = $('#ovoiceWrap');
+    const ovoiceEl = $('#ovoice');
     const voiceInput = $('#voice');
     const form = $('#ttsForm');
     const btn = $('#synthBtn');
@@ -226,8 +227,15 @@ INDEX_HTML = f"""
     function updateThemeIcon() {{ const t = document.documentElement.getAttribute('data-theme'); themeIcon.textContent = t === 'dark' ? '☀️' : '🌙'; }}
     themeBtn.addEventListener('click', () => {{ const cur = document.documentElement.getAttribute('data-theme') || 'light'; const next = cur === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', next); document.documentElement.setAttribute('data-theme', next); updateThemeIcon(); }});
     updateThemeIcon();
-    function togglePiperUI() {{ const show = backendEl.value === 'piper'; langWrap.style.display = show ? '' : 'none'; pvoiceWrap.style.display = show ? '' : 'none'; }}
-    backendEl.addEventListener('change', togglePiperUI); togglePiperUI();
+    function toggleBackendOptions() {{
+      const isPiper = backendEl.value === 'piper';
+      const isOrpheus = backendEl.value === 'orpheus';
+      langWrap.style.display = isPiper ? '' : 'none';
+      pvoiceWrap.style.display = isPiper ? '' : 'none';
+      ovoiceWrap.style.display = isOrpheus ? '' : 'none';
+      if (!isPiper && !isOrpheus) {{ voiceInput.value = ''; }}
+    }}
+    backendEl.addEventListener('change', toggleBackendOptions); toggleBackendOptions();
     async function loadPiperVoices() {{
       try {{
         const res = await fetch('/api/piper_voices');
@@ -257,6 +265,7 @@ INDEX_HTML = f"""
       }} catch (e) {{ console.warn('Failed to load piper voices', e); }}
     }}
     loadPiperVoices();
+    ovoiceEl?.addEventListener('input', () => {{ if (backendEl.value === 'orpheus') {{ voiceInput.value = (ovoiceEl.value || '').trim(); }} }});
     function setBusy(isBusy, text) {{ btn.disabled = isBusy; if (isBusy) {{ btn.innerHTML = 'Synthesizing <span class=\"spinner\"></span>'; }} else {{ btn.textContent = 'Synthesize'; }} progress.classList.toggle('show', isBusy); if (!isBusy) {{ bar.style.width = '0%'; }} statusEl.textContent = text || ''; }}
     function parseFileName(xhr) {{ try {{ const dispo = xhr.getResponseHeader('Content-Disposition') || ''; const m = /filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i.exec(dispo); const name = decodeURIComponent(m?.[1] || m?.[2] || '').trim(); if (name) return name; }} catch {{}} return 'output'; }}
     form.addEventListener('submit', (ev) => {{

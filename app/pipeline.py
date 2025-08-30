@@ -35,7 +35,7 @@ def synthesize_document(
     base = p.stem
     out_wav = Path(settings.output_dir) / f"{base}.wav"
 
-    if engine.backend in {"pyttsx3", "piper", "parler"}:
+    if engine.backend in {"pyttsx3", "piper"}:
         # Non-streaming path: synthesize whole text at once
         full_text = " ".join(
             (c if c.endswith((".", "!", "?", ":")) else c + ".")
@@ -43,6 +43,38 @@ def synthesize_document(
         )
         out_path = engine.synthesize_to_wav(full_text, out_wav, voice=voice)
         return maybe_convert_to_mp3(out_path, audio_format=audio_format)
+    elif engine.backend == "parler":
+        # Generate per-chunk audio and append to a single WAV for faster, predictable latency
+        import numpy as np  # type: ignore
+        import wave
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        # First chunk determines sample rate
+        sr = None
+        with wave.open(out_wav.as_posix(), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit PCM
+            for i, ch in enumerate(chunks):
+                ch_text = ch.strip()
+                if not ch_text:
+                    continue
+                if not ch_text.endswith((".", "!", "?", ":")):
+                    ch_text += "."
+                audio_f32, this_sr = engine.parler_generate_audio(ch_text, voice=voice)
+                if sr is None:
+                    sr = this_sr
+                    wf.setframerate(sr)
+                # Resample if a chunk returned different SR (unlikely) — simplistic guard
+                if this_sr != sr:
+                    # naive resample via numpy (fallback) — keep simple to avoid extra deps
+                    ratio = float(sr) / float(this_sr)
+                    idx = np.arange(0, len(audio_f32) * ratio, ratio)
+                    idx = idx[idx < len(audio_f32)].astype(np.int64)
+                    audio_f32 = audio_f32[idx]
+                # Convert to int16 PCM and write
+                pcm = np.clip(audio_f32, -1.0, 1.0)
+                pcm = (pcm * 32767.0).astype(np.int16).tobytes()
+                wf.writeframes(pcm)
+        return maybe_convert_to_mp3(out_wav, audio_format=audio_format)
     else:
         # Streaming path (orpheus or mock)
         out_wav.parent.mkdir(parents=True, exist_ok=True)

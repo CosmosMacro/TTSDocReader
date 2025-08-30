@@ -69,6 +69,9 @@ class OrpheusEngine:
         self.model = None
         self.backend: str = "mock"  # or "orpheus" | "pyttsx3" | "piper" | "parler"
         self.desired_backend: str = (force_backend or settings.tts_backend).lower()
+        # Lazy caches for Parler
+        self._parler_tok = None
+        self._parler_model = None
 
         desired = self.desired_backend
         # Resolution d'ordre: explicit > auto with availability
@@ -261,6 +264,44 @@ class OrpheusEngine:
             except Exception:
                 pass
         return out
+
+    # ---- Parler helpers (non-streaming, array output) ----
+    def _parler_load(self):
+        if self._parler_tok is not None and self._parler_model is not None:
+            return self._parler_tok, self._parler_model
+        try:
+            from transformers import AutoTokenizer  # type: ignore
+            from parler_tts import ParlerTTSForConditionalGeneration  # type: ignore
+        except Exception as e:
+            raise RuntimeError("Parler backend unavailable. Install optional deps: pip install -r requirements-parler.txt") from e
+        tok = AutoTokenizer.from_pretrained(settings.parler_model)
+        model = ParlerTTSForConditionalGeneration.from_pretrained(settings.parler_model)
+        self._parler_tok, self._parler_model = tok, model
+        return tok, model
+
+    def parler_generate_audio(self, text: str, voice: Optional[str] = None):
+        """Return (audio_float32_numpy, sample_rate) for given text using Parler."""
+        if self.backend != "parler":
+            raise RuntimeError("parler_generate_audio called but backend is not 'parler'")
+        tok, model = self._parler_load()
+        desc = tok(text, return_tensors="pt")
+        style_prompt = (voice or settings.voice or "").strip() or "A clear, natural French voice with expressive, warm tone."
+        prompt = tok(style_prompt, return_tensors="pt")
+        import torch
+        with torch.no_grad():
+            gen = model.generate(
+                desc["input_ids"],
+                attention_mask=desc.get("attention_mask"),
+                prompt_input_ids=prompt["input_ids"],
+                prompt_attention_mask=prompt.get("attention_mask"),
+            )
+        import numpy as np  # type: ignore
+        if hasattr(gen, "sequences"):
+            audio = gen.sequences.squeeze().cpu().float().numpy()
+        else:
+            audio = gen.squeeze().cpu().float().numpy()
+        sr = int(getattr(model.audio_encoder.config, "sampling_rate", 44100))
+        return audio.astype("float32", copy=False), sr
 
 
 def write_stream_to_wav(chunks: Iterable[bytes], out_path: str | Path, sample_rate: int = 24000) -> None:

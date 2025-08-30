@@ -18,6 +18,17 @@ pip install -r requirements.txt
 # Copy env and adjust as needed
 copy .env.sample .env   # Windows
 # cp .env.sample .env   # macOS/Linux
+
+# Optional: fetch Piper locally (binaries + a FR voice)
+# Windows PowerShell
+#   powershell -ExecutionPolicy Bypass -File scripts/setup_piper.ps1
+# Linux/macOS
+#   bash scripts/setup_piper.sh
+
+# Then set in .env if using Piper
+#   TTS_BACKEND=piper
+#   PIPER_BIN=path/to/third_party/piper/piper/piper(.exe)
+#   PIPER_MODEL=path/to/third_party/piper/models/fr_FR-siwis-medium.onnx
 ```
 
 ## Web UI
@@ -73,6 +84,11 @@ setx PIPER_MODEL "C:\\path\\to\\models\\fr_FR-<voice>-medium.onnx"
 # Then run
 python cli.py sample.txt --voice "C:\\path\\to\\models\\fr_FR-<voice>-medium.onnx"
 ```
+
+## Third-Party Assets
+- The repository does NOT include TTS binaries/models to keep it lightweight.
+- Place external assets under `third_party/` (ignored by git). See `third_party/README.md`.
+- Use the provided setup scripts to download Piper and a sample voice.
 
 ## Project structure
 ```

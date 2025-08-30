@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+.venv311/
+venv/
+ENV/
+
+# Env
+.env
+.env.*
+
+# Outputs / logs
+outputs/
+uvicorn_server.log
+uvicorn_server.err
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Third-party TTS assets (keep out of git)
+third_party/**
+!third_party/.gitkeep
+!third_party/README.md

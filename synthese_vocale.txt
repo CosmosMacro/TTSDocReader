@@ -1,0 +1,8 @@
+La synthèse vocale est une technologie qui permet de transformer un texte écrit en parole
+intelligible. Elle s’appuie sur des modèles linguistiques et acoustiques pour reproduire la voix
+humaine avec fluidité et naturel. Aujourd’hui, les systèmes modernes utilisent l’intelligence
+artificielle et les réseaux neuronaux pour générer une prosodie réaliste, capable de refléter
+l’intonation, le rythme et l’émotion. Cette technologie est largement utilisée dans les assistants
+vocaux, les outils d’accessibilité pour les personnes malvoyantes, ou encore dans les applications
+de lecture automatique. La synthèse vocale rapproche le langage écrit et oral, rendant l’information
+plus accessible.

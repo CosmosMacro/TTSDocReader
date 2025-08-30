@@ -1,0 +1,1 @@
+﻿Bonjour! Ceci est un test rapide.\n\nDeuxième paragraphe pour vérifier le découpage en blocs et la synthèse. Merci!

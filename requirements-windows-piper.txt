@@ -1,0 +1,10 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+pymupdf>=1.24
+python-docx>=1.1
+pydub>=0.25
+regex>=2024.5.15
+tqdm>=4.66
+pyttsx3>=2.90
+python-multipart>=0.0.9

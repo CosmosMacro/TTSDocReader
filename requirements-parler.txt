@@ -1,0 +1,2 @@
+parler-tts>=0.1
+soundfile>=0.12

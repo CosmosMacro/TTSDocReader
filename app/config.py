@@ -27,6 +27,10 @@ class Settings:
         (Path(__file__).resolve().parents[1] / "third_party" / "piper").as_posix(),
     )
 
+    # Parler TTS (prosody/style via text prompt)
+    # - PARLER_MODEL: HF model id (e.g., "parler-tts/parler-tts-mini-v1")
+    parler_model: str = os.getenv("PARLER_MODEL", "parler-tts/parler-tts-mini-v1")
+
 
 settings = Settings()
 

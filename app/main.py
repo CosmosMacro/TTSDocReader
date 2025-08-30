@@ -138,6 +138,7 @@ INDEX_HTML = f"""
             <select name='backend' id='backend'>
               <option value='auto' {'selected' if settings.tts_backend=='auto' else ''}>auto</option>
               <option value='orpheus' {'selected' if settings.tts_backend=='orpheus' else ''}>orpheus</option>
+              <option value='parler' {'selected' if settings.tts_backend=='parler' else ''}>parler</option>
               <option value='piper' {'selected' if settings.tts_backend=='piper' else ''}>piper</option>
               <option value='pyttsx3' {'selected' if settings.tts_backend=='pyttsx3' else ''}>pyttsx3</option>
             </select>
@@ -149,6 +150,10 @@ INDEX_HTML = f"""
           <div id='pvoiceWrap'>
             <label>Voice (Piper)</label>
             <select id='pvoice'></select>
+          </div>
+          <div id='parlerWrap'>
+            <label>Style prompt (Parler)</label>
+            <input id='parlerPrompt' type='text' placeholder='e.g., Warm, expressive female voice, calm tone' />
           </div>
           <div id='ovoiceWrap'>
             <label>Voice (Orpheus, optional)</label>
@@ -214,6 +219,8 @@ INDEX_HTML = f"""
     const pvoiceEl = $('#pvoice');
     const ovoiceWrap = $('#ovoiceWrap');
     const ovoiceEl = $('#ovoice');
+    const parlerWrap = $('#parlerWrap');
+    const parlerPrompt = $('#parlerPrompt');
     const voiceInput = $('#voice');
     const form = $('#ttsForm');
     const btn = $('#synthBtn');
@@ -230,10 +237,12 @@ INDEX_HTML = f"""
     function toggleBackendOptions() {{
       const isPiper = backendEl.value === 'piper';
       const isOrpheus = backendEl.value === 'orpheus';
+      const isParler = backendEl.value === 'parler';
       langWrap.style.display = isPiper ? '' : 'none';
       pvoiceWrap.style.display = isPiper ? '' : 'none';
       ovoiceWrap.style.display = isOrpheus ? '' : 'none';
-      if (!isPiper && !isOrpheus) {{ voiceInput.value = ''; }}
+      parlerWrap.style.display = isParler ? '' : 'none';
+      if (!isPiper && !isOrpheus && !isParler) {{ voiceInput.value = ''; }}
     }}
     backendEl.addEventListener('change', toggleBackendOptions); toggleBackendOptions();
     async function loadPiperVoices() {{
@@ -266,6 +275,7 @@ INDEX_HTML = f"""
     }}
     loadPiperVoices();
     ovoiceEl?.addEventListener('input', () => {{ if (backendEl.value === 'orpheus') {{ voiceInput.value = (ovoiceEl.value || '').trim(); }} }});
+    parlerPrompt?.addEventListener('input', () => {{ if (backendEl.value === 'parler') {{ voiceInput.value = (parlerPrompt.value || '').trim(); }} }});
     function setBusy(isBusy, text) {{ btn.disabled = isBusy; if (isBusy) {{ btn.innerHTML = 'Synthesizing <span class=\"spinner\"></span>'; }} else {{ btn.textContent = 'Synthesize'; }} progress.classList.toggle('show', isBusy); if (!isBusy) {{ bar.style.width = '0%'; }} statusEl.textContent = text || ''; }}
     function parseFileName(xhr) {{ try {{ const dispo = xhr.getResponseHeader('Content-Disposition') || ''; const m = /filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i.exec(dispo); const name = decodeURIComponent(m?.[1] || m?.[2] || '').trim(); if (name) return name; }} catch {{}} return 'output'; }}
     form.addEventListener('submit', (ev) => {{

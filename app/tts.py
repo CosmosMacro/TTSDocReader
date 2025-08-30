@@ -52,6 +52,15 @@ try:
 except Exception:
     _PIPER_AVAILABLE = False
 
+# Parler (CPU/GPU via transformers; optional)
+_PARLER_AVAILABLE = True
+try:  # pragma: no cover
+    from parler_tts import ParlerTTS  # type: ignore
+except Exception as e:  # pragma: no cover
+    _PARLER_AVAILABLE = False
+    if IMPORT_ERROR is None:
+        IMPORT_ERROR = f"parler_tts unavailable: {e}"
+
 
 class OrpheusEngine:
     _instance: Optional["OrpheusEngine"] = None
@@ -59,7 +68,7 @@ class OrpheusEngine:
     def __init__(self, model_name: str | None = None, force_backend: Optional[str] = None):
         self.model_name = model_name or settings.model_name
         self.model = None
-        self.backend: str = "mock"  # or "orpheus" | "pyttsx3" | "piper"
+        self.backend: str = "mock"  # or "orpheus" | "pyttsx3" | "piper" | "parler"
         self.desired_backend: str = (force_backend or settings.tts_backend).lower()
 
         desired = self.desired_backend
@@ -89,18 +98,31 @@ class OrpheusEngine:
             self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
         elif desired == "piper":
             self.backend = "piper" if _PIPER_AVAILABLE else ("pyttsx3" if _PYTTSX3_AVAILABLE else "mock")
+        elif desired == "parler":
+            # Prefer Parler; fall back to Piper then pyttsx3
+            if _PARLER_AVAILABLE:
+                self.backend = "parler"
+            elif _PIPER_AVAILABLE:
+                self.backend = "piper"
+            else:
+                self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
         else:  # auto
             if _ORPHEUS_AVAILABLE:
                 try:
                     self.model = OrpheusModel(model_name=self.model_name)
                     self.backend = "orpheus"
                 except Exception:  # pragma: no cover
-                    if _PIPER_AVAILABLE:
+                    # If Orpheus fails at runtime, try Parler first (better prosody), then Piper
+                    if _PARLER_AVAILABLE:
+                        self.backend = "parler"
+                    elif _PIPER_AVAILABLE:
                         self.backend = "piper"
                     else:
                         self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
             else:
-                if _PIPER_AVAILABLE:
+                if _PARLER_AVAILABLE:
+                    self.backend = "parler"
+                elif _PIPER_AVAILABLE:
                     self.backend = "piper"
                 else:
                     self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
@@ -155,8 +177,8 @@ class OrpheusEngine:
         """
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        if self.backend not in {"pyttsx3", "piper"}:
-            raise RuntimeError("synthesize_to_wav is only supported for non-streaming backends (pyttsx3, piper)")
+        if self.backend not in {"pyttsx3", "piper", "parler"}:
+            raise RuntimeError("synthesize_to_wav is only supported for non-streaming backends (pyttsx3, piper, parler)")
 
         # Use a temp file to avoid partial outputs, then move
         tmp_dir = Path(tempfile.gettempdir()) / "orpheus_tts_tmp"
@@ -199,6 +221,32 @@ class OrpheusEngine:
             except subprocess.CalledProcessError as e:
                 stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
                 raise RuntimeError(f"Piper synthesis failed: {stderr}") from e
+        elif self.backend == "parler":
+            if not _PARLER_AVAILABLE:
+                raise RuntimeError("Parler backend unavailable. Install optional deps: pip install parler-tts soundfile")
+            # Initialize model (cached by HF)
+            tts = ParlerTTS.from_pretrained(settings.parler_model)
+            style_prompt = (voice or settings.voice or "").strip() or "A clear, natural French voice with expressive, warm tone."
+            # Synthesize; Parler returns audio float32 and sample rate
+            out_np = None
+            sr = getattr(tts, "sample_rate", 24000)
+            try:
+                # Some versions expose tts.synthesize(text, prompt)
+                result = tts.synthesize(text, style_prompt)
+                # Accept both dict and array returns
+                if isinstance(result, dict) and "audio" in result:
+                    out_np = result["audio"]
+                    sr = int(result.get("sample_rate", sr))
+                else:
+                    out_np = result
+            except Exception as e:
+                raise RuntimeError(f"Parler synthesis failed: {e}") from e
+            try:
+                import soundfile as sf  # type: ignore
+            except Exception as e:
+                raise RuntimeError("Missing dependency 'soundfile'. Install with: pip install soundfile") from e
+            # Write via soundfile
+            sf.write(tmp_wav.as_posix(), out_np, sr)
 
         try:
             tmp_wav.replace(out)

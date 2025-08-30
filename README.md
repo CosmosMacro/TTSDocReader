@@ -1,6 +1,6 @@
 # TTSDocReader
 
-Convert your documents (PDF/DOCX/TXT/MD) into natural-sounding audio using multiple TTS backends (Orpheus, Piper, pyttsx3).
+Convert your documents (PDF/DOCX/TXT/MD) into natural-sounding audio using multiple TTS backends (Orpheus, Parler, Piper, pyttsx3).
 
 ## Installation
 
@@ -29,6 +29,13 @@ copy .env.sample .env   # Windows
 #   TTS_BACKEND=piper
 #   PIPER_BIN=path/to/third_party/piper/piper/piper(.exe)
 #   PIPER_MODEL=path/to/third_party/piper/models/fr_FR-siwis-medium.onnx
+
+# Optional: Parler-TTS (prosody-rich)
+#   pip install -r requirements-parler.txt
+#   Set in .env if using Parler
+#     TTS_BACKEND=parler
+#     PARLER_MODEL=parler-tts/parler-tts-mini-v1
+#   In the Web UI, fill the "Style prompt (Parler)" (e.g., "Warm, expressive female voice, calm tone").
 ```
 
 ## Web UI
@@ -62,6 +69,7 @@ python cli.py docs\\ --voice lea --temperature 0.7 --repetition_penalty 1.15
 ## Audio backends
 - `TTS_BACKEND=auto` (default): tries Orpheus first; if unavailable, uses `pyttsx3` (CPU); otherwise falls back to a silent mock.
 - `TTS_BACKEND=orpheus`: forces Orpheus (GPU recommended). If init fails, will try `pyttsx3`.
+- `TTS_BACKEND=parler`: forces Parler-TTS (CPU/GPU via transformers). Install optional deps. Control tone/prosody with a style prompt.
 - `TTS_BACKEND=pyttsx3`: forces system TTS (CPU; SAPI5 on Windows) to produce audible WAV without GPU.
 
 - `TTS_BACKEND=piper`: uses Piper (CPU, external binary). Configure `PIPER_BIN` and `PIPER_MODEL` in `.env`.
@@ -69,9 +77,9 @@ python cli.py docs\\ --voice lea --temperature 0.7 --repetition_penalty 1.15
   - `PIPER_MODEL`: path to a voice model `.onnx` (e.g., `fr_FR-<voice>-medium.onnx`)
   - You can override the model per-run by passing `--voice` with a `.onnx` path.
 
-On Windows without NVIDIA/CUDA, set `TTS_BACKEND=pyttsx3` to guarantee sound.
+On Windows without NVIDIA/CUDA, set `TTS_BACKEND=pyttsx3` or `parler` (if installed) to guarantee sound.
 
-For higher-quality CPU voices on Windows, install Piper and set `TTS_BACKEND=piper`.
+For higher-quality CPU voices on Windows, install Piper and set `TTS_BACKEND=piper`. For expressive control via text prompt, try `TTS_BACKEND=parler`.
 
 Example (PowerShell):
 ```

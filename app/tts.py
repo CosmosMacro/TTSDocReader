@@ -53,13 +53,12 @@ except Exception:
     _PIPER_AVAILABLE = False
 
 # Parler (CPU/GPU via transformers; optional)
-_PARLER_AVAILABLE = True
-try:  # pragma: no cover
-    from parler_tts import ParlerTTS  # type: ignore
-except Exception as e:  # pragma: no cover
-    _PARLER_AVAILABLE = False
-    if IMPORT_ERROR is None:
-        IMPORT_ERROR = f"parler_tts unavailable: {e}"
+def _parler_is_available() -> bool:
+    try:  # pragma: no cover
+        import parler_tts  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 class OrpheusEngine:
@@ -99,13 +98,8 @@ class OrpheusEngine:
         elif desired == "piper":
             self.backend = "piper" if _PIPER_AVAILABLE else ("pyttsx3" if _PYTTSX3_AVAILABLE else "mock")
         elif desired == "parler":
-            # Prefer Parler; fall back to Piper then pyttsx3
-            if _PARLER_AVAILABLE:
-                self.backend = "parler"
-            elif _PIPER_AVAILABLE:
-                self.backend = "piper"
-            else:
-                self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
+            # Prefer Parler; if import later fails, caller will see a clear error
+            self.backend = "parler"
         else:  # auto
             if _ORPHEUS_AVAILABLE:
                 try:
@@ -113,14 +107,14 @@ class OrpheusEngine:
                     self.backend = "orpheus"
                 except Exception:  # pragma: no cover
                     # If Orpheus fails at runtime, try Parler first (better prosody), then Piper
-                    if _PARLER_AVAILABLE:
+                    if _parler_is_available():
                         self.backend = "parler"
                     elif _PIPER_AVAILABLE:
                         self.backend = "piper"
                     else:
                         self.backend = "pyttsx3" if _PYTTSX3_AVAILABLE else "mock"
             else:
-                if _PARLER_AVAILABLE:
+                if _parler_is_available():
                     self.backend = "parler"
                 elif _PIPER_AVAILABLE:
                     self.backend = "piper"
@@ -222,8 +216,10 @@ class OrpheusEngine:
                 stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
                 raise RuntimeError(f"Piper synthesis failed: {stderr}") from e
         elif self.backend == "parler":
-            if not _PARLER_AVAILABLE:
-                raise RuntimeError("Parler backend unavailable. Install optional deps: pip install parler-tts soundfile")
+            try:
+                from parler_tts import ParlerTTS  # type: ignore
+            except Exception as e:
+                raise RuntimeError("Parler backend unavailable. Install optional deps: pip install -r requirements-parler.txt") from e
             # Initialize model (cached by HF)
             tts = ParlerTTS.from_pretrained(settings.parler_model)
             style_prompt = (voice or settings.voice or "").strip() or "A clear, natural French voice with expressive, warm tone."

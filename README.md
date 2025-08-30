@@ -1,6 +1,6 @@
-# OrpheusDocReader
+# TTSDocReader
 
-Convert your documents (PDF/DOCX/TXT/MD) into natural-sounding audio using Orpheus TTS.
+Convert your documents (PDF/DOCX/TXT/MD) into natural-sounding audio using multiple TTS backends (Orpheus, Piper, pyttsx3).
 
 ## Installation
 

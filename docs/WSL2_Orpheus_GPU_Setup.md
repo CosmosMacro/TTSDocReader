@@ -1,4 +1,4 @@
-# OrpheusDocReader — WSL2 + NVIDIA GPU (Orpheus/vLLM)
+# TTSDocReader — WSL2 + NVIDIA GPU (Orpheus/vLLM)
 
 This guide sets up the project on Ubuntu under WSL2 with GPU acceleration so Orpheus (vLLM) runs properly.
 
@@ -30,11 +30,11 @@ For best performance, keep sources in the Linux filesystem:
 ```bash
 cd ~
 # Option A: clone repo if remote exists
-# git clone <your_repo_url> OrpheusDocReader && cd OrpheusDocReader
+# git clone <your_repo_url> TTSDocReader && cd TTSDocReader
 
 # Option B: copy from Windows path (replace with your path)
-cp -r /mnt/c/Users/Shadow/Documents/Code/OrpheusDocReader ~/OrpheusDocReader
-cd ~/OrpheusDocReader
+cp -r /mnt/c/Users/Shadow/Documents/Code/TTSDocReader ~/TTSDocReader
+cd ~/TTSDocReader
 ```
 
 ## 4) Python environment
@@ -90,5 +90,4 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## 8) Optional
 - MP3 output: set `AUDIO_FORMAT=mp3` (requires `ffmpeg`, already installed above).
-- Keep sources in Linux filesystem (`~/OrpheusDocReader`) for best I/O performance.
-
+- Keep sources in Linux filesystem (`~/TTSDocReader`) for best I/O performance.

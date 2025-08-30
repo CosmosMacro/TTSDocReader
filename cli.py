@@ -8,7 +8,7 @@ from app.config import settings
 
 
 def main():
-    p = argparse.ArgumentParser(description="OrpheusDocReader CLI")
+    p = argparse.ArgumentParser(description="TTSDocReader CLI")
     p.add_argument("inputs", nargs="+", help="Files or folders to convert")
     p.add_argument("--voice", default=settings.voice, help="Voice name (optional)")
     p.add_argument("--temperature", type=float, default=settings.temperature)

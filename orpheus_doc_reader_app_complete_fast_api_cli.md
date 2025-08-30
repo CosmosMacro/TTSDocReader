@@ -1,4 +1,4 @@
-# OrpheusDocReader – Application complète (FastAPI + CLI)
+# TTSDocReader – Application complète (FastAPI + CLI)
 
 Une app locale pour convertir des PDF/DOCX en audio naturel (FR) avec **Orpheus TTS**. Inclut :
 - Extraction de texte (PDF via PyMuPDF, DOCX via python-docx)
@@ -366,7 +366,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from .config import settings
 from .pipeline import synthesize_document
 
-app = FastAPI(title="OrpheusDocReader")
+app = FastAPI(title="TTSDocReader")
 
 INDEX_HTML = f"""
 <!doctype html>
@@ -374,7 +374,7 @@ INDEX_HTML = f"""
 <head>
   <meta charset='utf-8'/>
   <meta name='viewport' content='width=device-width, initial-scale=1'/>
-  <title>OrpheusDocReader</title>
+  <title>TTSDocReader</title>
   <style>
     body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }}
     .card {{ max-width: 820px; padding: 1.25rem; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.04); }}
@@ -386,7 +386,7 @@ INDEX_HTML = f"""
 </head>
 <body>
   <div class='card'>
-    <h1>OrpheusDocReader</h1>
+    <h1>TTSDocReader</h1>
     <p class='hint'>Convertissez vos <b>PDF</b> et <b>DOCX</b> en audio naturel (FR) avec Orpheus TTS.<br/>Modèle par défaut : <code>{settings.model_name}</code>.</p>
     <form action='/synthesize' method='post' enctype='multipart/form-data'>
       <label>Fichier (PDF/DOCX/TXT/MD)</label>
@@ -455,7 +455,7 @@ from app.config import settings
 
 
 def main():
-    p = argparse.ArgumentParser(description="OrpheusDocReader – CLI")
+    p = argparse.ArgumentParser(description="TTSDocReader – CLI")
     p.add_argument("inputs", nargs="+", help="Fichiers ou dossiers à convertir")
     p.add_argument("--voice", default=settings.voice, help="Nom de voix (optionnel)")
     p.add_argument("--temperature", type=float, default=settings.temperature)
@@ -498,7 +498,7 @@ if __name__ == "__main__":
 
 ## README.md
 ```md
-# OrpheusDocReader
+# TTSDocReader
 
 Convertit vos documents (PDF/DOCX/TXT/MD) en audio naturel (français) avec **Orpheus TTS**.
 
@@ -556,4 +556,3 @@ python cli.py dossier_docs/ --voice lea --temperature 0.7 --repetition_penalty 1
    **ou** **CLI** : `python cli.py monfichier.pdf`
 
 Bon build !
-

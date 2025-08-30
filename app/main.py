@@ -10,7 +10,7 @@ from .config import settings
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
 
-app = FastAPI(title="OrpheusDocReader")
+app = FastAPI(title="TTSDocReader")
 
 INDEX_HTML = f"""
 <!doctype html>
@@ -18,7 +18,7 @@ INDEX_HTML = f"""
 <head>
   <meta charset='utf-8'/>
   <meta name='viewport' content='width=device-width, initial-scale=1'/>
-  <title>OrpheusDocReader</title>
+  <title>TTSDocReader</title>
   <link rel='preconnect' href='https://fonts.googleapis.com'>
   <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
   <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>
@@ -106,7 +106,7 @@ INDEX_HTML = f"""
     <div class='topbar'>
       <div class='brand'>
         <svg class='icon' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3l2.5 4.33L19 9l-3 3.5L16 18l-4-1.5L8 18l.99-5.5L6 9l4.5-1.67L12 3z'/></svg>
-        OrpheusDocReader <span class='chip'>TTS</span>
+        TTSDocReader <span class='chip'>TTS</span>
       </div>
       <div class='actions'>
         <button id='themeBtn' class='btn btn-ghost' type='button' title='Toggle theme'>

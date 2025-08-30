@@ -24,7 +24,7 @@ def main():
     )
     p.add_argument(
         "--backend",
-        choices=["auto", "orpheus", "pyttsx3", "piper"],
+        choices=["auto", "orpheus", "parler", "piper", "pyttsx3"],
         default=settings.tts_backend,
         help="TTS backend to use (overrides .env)",
     )

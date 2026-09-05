@@ -163,28 +163,16 @@ def _navigation_entries(archive: ZipFile, opf_path: str, items: dict[str, tuple[
     return entries, nav_paths
 
 
-def _parse_navigated_sections(raw: str, entries: list[tuple[str | None, str]]) -> list[tuple[str, str]]:
-    """Extract sections delimited by EPUB navigation fragment anchors."""
-    located: list[tuple[int, str]] = []
-    for fragment, title in entries:
-        if fragment is None:
+def _best_navigation_title(entries: list[tuple[str | None, str]]) -> str | None:
+    """Choose a meaningful file-level title, ignoring page-number anchors."""
+    for _fragment, title in entries:
+        clean = normalize_text(title)
+        if not clean or re.fullmatch(r"\d+", clean):
             continue
-        pattern = re.compile(r"(?:id|name)\s*=\s*['\"]" + re.escape(fragment) + r"['\"]", re.IGNORECASE)
-        match = pattern.search(raw)
-        if match:
-            located.append((raw.rfind("<", 0, match.start()), title))
-    if not located:
-        return []
-    located.sort(key=lambda item: item[0])
-    sections: list[tuple[str, str]] = []
-    for index, (start, title) in enumerate(located):
-        end = located[index + 1][0] if index + 1 < len(located) else len(raw)
-        parser = _XhtmlText()
-        parser.feed(raw[start:end])
-        text = parser.text
-        if text:
-            sections.append((title, text))
-    return sections
+        if clean.casefold() in {"références", "references"}:
+            continue
+        return clean
+    return None
 
 
 def _parse_epub(path: Path) -> Book:
@@ -213,18 +201,13 @@ def _parse_epub(path: Path) -> Book:
             if not href or href in navigation_paths or href not in archive.namelist():
                 continue
             raw = archive.read(href).decode("utf-8", errors="replace")
-            nav_sections = _parse_navigated_sections(raw, navigation_entries.get(href, []))
-            if nav_sections:
-                for title, text in nav_sections:
-                    chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
-                continue
             parser = _XhtmlText()
             parser.feed(raw)
             text = parser.text
             if not text:
                 continue
             entries = navigation_entries.get(href, [])
-            title = next((title for fragment, title in entries if fragment is None), None) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
+            title = _best_navigation_title(entries) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
             chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
 
         if not chapters:

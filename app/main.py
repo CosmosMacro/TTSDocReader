@@ -370,7 +370,8 @@ async def synthesize_audiobook(
                 raise ValueError("titles_json must be a JSON array of strings")
             book = apply_chapter_titles(book, titles)
         provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
-        result = build_audiobook(book, work_dir / "output", provider, voice=voice or None)
+        book_output_dir = Path(settings.output_dir) / "audiobooks" / path.stem
+        result = build_audiobook(book, book_output_dir, provider, voice=voice or None)
         archive = work_dir / "audiobook-output.zip"
         with ZipFile(archive, "w", ZIP_DEFLATED) as z:
             for output_file in result.m4b.parent.iterdir():

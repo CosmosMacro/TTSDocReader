@@ -1,5 +1,9 @@
 from pathlib import Path
+import os
 import unittest
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -38,6 +42,26 @@ class AudiobookWebTests(unittest.TestCase):
             response = self.client.post("/api/audiobook/synthesize", files={"file": ("book.epub", book, "application/epub+zip")})
         self.assertEqual(response.status_code, 400)
         self.assertIn("confirmation", response.json()["detail"])
+
+    def test_synthesis_persists_outputs_under_configured_directory(self):
+        def fake_build(book, output_dir, provider, voice=None):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            mp3 = output_dir / "001-Chapitre.mp3"
+            m4b = output_dir / "Book.m4b"
+            manifest = output_dir / "manifest.json"
+            mp3.write_bytes(b"mp3")
+            m4b.write_bytes(b"m4b")
+            manifest.write_text("{}")
+            return SimpleNamespace(chapter_files=[mp3], m4b=m4b, manifest=manifest)
+
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"FISH_API_KEY": "test-key"}), patch("app.main.FishAudioProvider"), patch("app.main.build_audiobook", side_effect=fake_build):
+            from app.main import settings
+            with patch.object(settings, "output_dir", tmp):
+                with self.fixture.open("rb") as book:
+                    response = self.client.post("/api/audiobook/synthesize", data={"confirm_egress": "true", "titles_json": "[]"}, files={"file": ("book.epub", book, "application/epub+zip")})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue((Path(tmp) / "audiobooks" / "book").exists())
+            self.assertTrue((Path(tmp) / "audiobooks" / "book" / "Book.m4b").exists())
 
 
 if __name__ == "__main__":

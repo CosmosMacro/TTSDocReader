@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import os
+import subprocess
 import unittest
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app, settings
+from app.main import AUDIOBOOK_HTML, app, settings
 
 
 class AudiobookWebTests(unittest.TestCase):
@@ -24,6 +25,14 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("Aperçu du texte", response.text)
         self.assertIn("Fusionner", response.text)
         self.assertIn("Sauvegarder le manifeste", response.text)
+
+    def test_audiobook_javascript_is_valid(self):
+        script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+        with TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / "audiobook.js"
+            script_path.write_text(script, encoding="utf-8")
+            result = subprocess.run(["node", "--check", str(script_path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")

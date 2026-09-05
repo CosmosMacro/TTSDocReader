@@ -17,6 +17,14 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Audiobook", response.text)
 
+    def test_root_uses_audiobook_and_legacy_page_remains_available(self):
+        root = self.client.get("/")
+        legacy = self.client.get("/tts")
+        self.assertEqual(root.status_code, 200)
+        self.assertIn("Importe un EPUB", root.text)
+        self.assertEqual(legacy.status_code, 200)
+        self.assertIn("Convert PDF/DOCX/TXT/MD", legacy.text)
+
     def test_inspect_endpoint_returns_chapters_without_api_key(self):
         with self.fixture.open("rb") as book:
             response = self.client.post("/api/audiobook/inspect", files={"file": ("book.epub", book, "application/epub+zip")})

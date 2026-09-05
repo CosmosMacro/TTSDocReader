@@ -307,6 +307,11 @@ INDEX_HTML = f"""
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    return AUDIOBOOK_HTML
+
+
+@app.get("/tts", response_class=HTMLResponse)
+async def legacy_tts_page():
     return INDEX_HTML
 
 

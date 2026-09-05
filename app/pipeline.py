@@ -26,6 +26,7 @@ def synthesize_document(
     """
     p = Path(path)
     text = extract_text(p)
+    engine = OrpheusEngine.instance(force_backend=backend)
     # Choose chunk length; Parler is heavy on CPU, keep chunks smaller
     local_max = max_chars
     if engine.backend == "parler":

@@ -115,12 +115,26 @@ README.md
 docs/WSL2_Orpheus_GPU_Setup.md
 ```
 
-## Quick start
-1) Create and activate virtualenv; install requirements
-2) Copy `.env.sample` to `.env` and adjust if needed
-3) Web: `uvicorn app.main:app --reload --port 8000` then open http://localhost:8000
-   
-   Or CLI: `python cli.py yourfile.pdf`
+## Audiobook MVP (Fish Audio)
+
+The new audiobook CLI accepts DRM-free EPUBs and text PDFs, estimates the Fish Audio cost, asks for explicit confirmation before sending text, and creates chapter MP3s plus a navigable M4B.
+
+```bash
+# Windows PowerShell
+$env:FISH_API_KEY = "your-key"
+$env:FISH_MODEL = "s2.1-pro-free"
+python audiobook_cli.py book.epub --voice YOUR_FISH_VOICE_ID --yes
+
+# Outputs: outputs/<book>/001-*.mp3, 002-*.mp3, and <book>.m4b
+```
+
+The default model is `s2.1-pro-free` for low-cost development tests. Use a short, copyright-free test EPUB first. The CLI refuses to transmit the book unless `--yes` is supplied.
+
+python audiobook_cli.py tests/fixtures/mvp-test-book.epub --inspect
+
+# Optional correction file, a JSON array with one title per chapter
+python audiobook_cli.py tests/fixtures/mvp-test-book.epub --inspect --chapters-json corrected-titles.json
+
 
 ## Orpheus on WSL2 (GPU)
 - For a stable GPU setup on Windows, prefer WSL2 Ubuntu.

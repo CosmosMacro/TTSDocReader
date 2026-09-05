@@ -18,15 +18,16 @@ class BookImportTests(unittest.TestCase):
                 z.writestr("OPS/content.opf", """<?xml version='1.0'?>
                     <package xmlns='http://www.idpf.org/2007/opf' version='3.0'>
                       <metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title>Psychiatrie en pratique</dc:title><dc:creator>Dr Test</dc:creator></metadata>
-                      <manifest><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest>
+                      <manifest><item id='nav' href='nav.xhtml' media-type='application/xhtml+xml' properties='nav'/><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest>
                       <spine><itemref idref='c1'/><itemref idref='c2'/></spine>
                     </package>""")
-                z.writestr("OPS/chapter1.xhtml", "<html><body><h1>Introduction</h1><p>Premier chapitre.</p></body></html>")
-                z.writestr("OPS/chapter2.xhtml", "<html><body><h1>Conclusion</h1><p>Dernier chapitre.</p></body></html>")
+                z.writestr("OPS/chapter1.xhtml", "<html><body><h1>Titre interne erroné</h1><p>Premier chapitre.</p></body></html>")
+                z.writestr("OPS/chapter2.xhtml", "<html><body><h1>Conclusion interne</h1><p>Dernier chapitre.</p></body></html>")
+                z.writestr("OPS/nav.xhtml", "<html><body><nav epub:type='toc'><ol><li><a href='chapter1.xhtml'>Introduction clinique</a></li><li><a href='chapter2.xhtml'>Conclusion clinique</a></li></ol></nav></body></html>")
             book = load_book(epub)
             self.assertEqual(book.title, "Psychiatrie en pratique")
             self.assertEqual(book.author, "Dr Test")
-            self.assertEqual([c.title for c in book.chapters], ["Introduction", "Conclusion"])
+            self.assertEqual([c.title for c in book.chapters], ["Introduction clinique", "Conclusion clinique"])
             self.assertEqual(book.chapters[0].text, "Premier chapitre.")
 
     def test_heading_detection_can_split_plain_text(self):

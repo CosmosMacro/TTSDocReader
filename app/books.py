@@ -31,6 +31,31 @@ class Book:
         return "\n\n".join(c.text for c in self.chapters if c.text)
 
 
+class _NavigationParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "a":
+            self._href = dict(attrs).get("href")
+            self._text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._href:
+            label = normalize_text(" ".join("".join(self._text).split()))
+            if label:
+                self.links.append((self._href, label))
+            self._href = None
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href:
+            self._text.append(data)
+
+
 class _XhtmlText(HTMLParser):
     """Extract readable XHTML text while retaining heading boundaries."""
 
@@ -99,6 +124,37 @@ def _resolve_zip_path(base: str, href: str) -> str:
     return posixpath.normpath(posixpath.join(posixpath.dirname(base), href))
 
 
+def _navigation_titles(archive: ZipFile, opf_path: str, items: dict[str, tuple[str, str]]) -> tuple[dict[str, str], set[str]]:
+    """Return content-path -> title mappings and navigation document paths."""
+    titles: dict[str, str] = {}
+    nav_paths: set[str] = set()
+    for item_id, (href, properties) in items.items():
+        if "nav" in properties.split():
+            nav_paths.add(href)
+            try:
+                parser = _NavigationParser()
+                parser.feed(archive.read(href).decode("utf-8", errors="replace"))
+                for target, label in parser.links:
+                    titles[_resolve_zip_path(href, target)] = label
+            except (KeyError, ValueError):
+                pass
+    for item_id, (href, media_type) in items.items():
+        if media_type != "application/x-dtbncx+xml" or href not in archive.namelist():
+            continue
+        try:
+            root = ET.fromstring(archive.read(href))
+            for point in root.iter():
+                if _local(point.tag) != "navPoint":
+                    continue
+                label = next((normalize_text(x.text or "") for x in point.iter() if _local(x.tag) == "text" and x.text), "")
+                content = next((x.attrib.get("src") for x in point.iter() if _local(x.tag) == "content" and x.attrib.get("src")), None)
+                if label and content:
+                    titles[_resolve_zip_path(href, content)] = label
+        except (ET.ParseError, KeyError):
+            pass
+    return titles, nav_paths
+
+
 def _parse_epub(path: Path) -> Book:
     with ZipFile(path) as archive:
         container = ET.fromstring(archive.read("META-INF/container.xml"))
@@ -109,22 +165,27 @@ def _parse_epub(path: Path) -> Book:
         opf = ET.fromstring(archive.read(opf_path))
 
         manifest: dict[str, str] = {}
+        item_meta: dict[str, tuple[str, str]] = {}
         for item in opf.iter():
             if _local(item.tag) == "item" and item.attrib.get("id") and item.attrib.get("href"):
-                manifest[item.attrib["id"]] = _resolve_zip_path(opf_path, item.attrib["href"])
+                item_id = item.attrib["id"]
+                href = _resolve_zip_path(opf_path, item.attrib["href"])
+                manifest[item_id] = href
+                item_meta[item_id] = (href, item.attrib.get("properties", "") or item.attrib.get("media-type", ""))
 
         spine_ids = [item.attrib.get("idref") for item in opf.iter() if _local(item.tag) == "itemref"]
+        navigation_titles, navigation_paths = _navigation_titles(archive, opf_path, item_meta)
         chapters: list[Chapter] = []
         for source_index, item_id in enumerate(spine_ids):
             href = manifest.get(item_id or "")
-            if not href or href not in archive.namelist():
+            if not href or href in navigation_paths or href not in archive.namelist():
                 continue
             parser = _XhtmlText()
             parser.feed(archive.read(href).decode("utf-8", errors="replace"))
             text = parser.text
             if not text:
                 continue
-            title = parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}"
+            title = navigation_titles.get(href) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
             chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
 
         if not chapters:

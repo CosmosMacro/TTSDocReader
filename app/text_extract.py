@@ -5,9 +5,12 @@ from pathlib import Path
 
 # Optional PDF support (PyMuPDF)
 try:
-    import fitz  # type: ignore
+    import pymupdf as fitz  # type: ignore
 except Exception:  # pragma: no cover
-    fitz = None  # type: ignore
+    try:
+        import fitz  # type: ignore
+    except Exception:  # pragma: no cover
+        fitz = None  # type: ignore
 
 # Optional DOCX support
 try:

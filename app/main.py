@@ -13,8 +13,10 @@ from .audiobook import build_audiobook
 from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 from .config import settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
+from .llm import propose_with_llm
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
+from .text_prepare import clean_for_speech
 
 app = FastAPI(title="TTSDocReader")
 
@@ -324,14 +326,14 @@ AUDIOBOOK_HTML = """
 <script>
 const $=id=>document.getElementById(id);let current=null;
 const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;});}
-function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button></div><details class="preview"><summary>Aperçu du texte</summary>${esc(c.text.slice(0,3000))}${c.text.length>3000?'…':''}</details></div>`).join('')}</div>`).join('');}
+function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`),e=document.querySelector(`.edit-text[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;if(e)c.text=e.value;});}
+function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button></div><details class="preview"><summary>Aperçu du texte / Modifier le texte</summary><textarea class="edit-text" data-i="${c.i}">${esc(c.text)}</textarea><button type="button" data-action="clean" data-i="${c.i}">Nettoyer automatiquement</button><button type="button" data-action="llm" data-i="${c.i}">Proposer avec IA</button>${c.proposal?`<div class="proposal"><b>Proposition IA — non acceptée</b><pre>${esc(c.proposal.slice(0,6000))}</pre><button type="button" data-action="accept" data-i="${c.i}">Accepter cette proposition</button></div>`:''}</details></div>`).join('')}</div>`).join('');}
 function setSelection(predicate){syncDom();current.chapters.forEach(c=>c.selected=predicate(c));render();}
 function structure(){syncDom();return current.chapters.map(c=>({title:c.title,text:c.text,selected:!!c.selected,kind:c.kind,group:c.group,confidence:c.confidence}));}
 function move(i,delta){syncDom();const j=i+delta;if(j<0||j>=current.chapters.length)return;[current.chapters[i],current.chapters[j]]=[current.chapters[j],current.chapters[i]];render();}
 function merge(i){syncDom();if(i>=current.chapters.length-1)return;const a=current.chapters[i],b=current.chapters[i+1];a.title=a.title+' / '+b.title;a.text=a.text+'\\n\\n'+b.text;a.selected=a.selected||b.selected;a.confidence=Math.min(a.confidence,b.confidence);current.chapters.splice(i+1,1);render();}
 function split(i){syncDom();const c=current.chapters[i],at=prompt('Texte qui commence la seconde unité (copie une phrase ou un titre)');if(!at)return;const pos=c.text.indexOf(at);if(pos<=0){alert('Marqueur introuvable ou placé au début.');return;}const first=c.text.slice(0,pos).trim(),second=c.text.slice(pos).trim();if(!first||!second)return;c.text=first;current.chapters.splice(i+1,0,{...c,title:c.title+' (suite)',text:second,confidence:Math.min(c.confidence,.6)});render();}
-$('chapters').onclick=e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action;if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);};
+$('chapters').onclick=async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action;if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);if(a==='accept'){syncDom();current.chapters[i].text=current.chapters[i].proposal;delete current.chapters[i].proposal;render();}if(a==='clean'||a==='llm'){syncDom();const fd=new FormData();fd.append('text',current.chapters[i].text);$('status').textContent=a==='clean'?'Nettoyage…':'Proposition IA en cours…';const r=await fetch(a==='clean'?'/api/audiobook/cleanup':'/api/audiobook/llm-propose',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}if(a==='clean')current.chapters[i].text=d.cleaned;else current.chapters[i].proposal=d.proposed;render();$('status').textContent=a==='clean'?'Nettoyage appliqué.':'Proposition reçue — elle doit être acceptée explicitement.';}};
 $('loadManifest').onclick=()=>{const f=$('manifestFile').files[0];if(!f)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(!Array.isArray(d.units)||!d.units.length)throw new Error('Le manifeste ne contient aucune unité.');current={title:d.title||'Document',author:d.author||null,estimated_cost_usd:0,chapters:d.units.map((c,i)=>({...c,index:i+1,kind:c.kind||'unknown',group:c.group||'À vérifier',confidence:Number(c.confidence||.5),selected:Boolean(c.selected)}))};$('summary').innerHTML='<p><b>'+esc(current.title)+'</b> — manifeste chargé. Sélection : '+current.chapters.filter(c=>c.selected).length+'/'+current.chapters.length+'</p>';render();$('settings').hidden=false;}catch(e){$('summary').innerHTML='<p class="error">'+esc(e.message||'Manifeste invalide')+'</p>';}};reader.readAsText(f);};
 $('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+esc(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+esc(d.title)+'</b> — '+d.chapters.length+' unité(s). Sélection proposée: '+d.chapters.filter(c=>c.selected).length+' · Coût total estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';render();$('settings').hidden=false;};
 $('mainOnly').onclick=()=>setSelection(c=>c.group==='Contenu principal');$('allNarrative').onclick=()=>setSelection(c=>c.kind!=='toc'&&c.kind!=='front_matter');
@@ -357,6 +359,24 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
         return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text, "kind": r.kind, "confidence": r.confidence, "selected": r.selected, "group": r.group} for c, r in zip(book.chapters, reviews)]}
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.post("/api/audiobook/cleanup")
+async def cleanup_audiobook_text(text: str = Form(...)):
+    if not text.strip():
+        return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    return {"original": text, "cleaned": clean_for_speech(text), "mode": "deterministic"}
+
+
+@app.post("/api/audiobook/llm-propose")
+async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = Form("")):
+    if not text.strip():
+        return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    try:
+        proposal = propose_with_llm(text, instruction.strip() or None)
+        return {"original": text, "proposed": proposal, "mode": "llm", "accepted": False}
+    except RuntimeError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
 
 
 @app.post("/api/audiobook/manifest")

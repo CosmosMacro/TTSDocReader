@@ -25,6 +25,9 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("Aperçu du texte", response.text)
         self.assertIn("Fusionner", response.text)
         self.assertIn("Sauvegarder le manifeste", response.text)
+        self.assertIn("Nettoyer automatiquement", response.text)
+        self.assertIn("Proposer avec IA", response.text)
+        self.assertIn("Accepter cette proposition", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -33,6 +36,19 @@ class AudiobookWebTests(unittest.TestCase):
             script_path.write_text(script, encoding="utf-8")
             result = subprocess.run(["node", "--check", str(script_path)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cleanup_endpoint_is_local_and_deterministic(self):
+        response = self.client.post("/api/audiobook/cleanup", data={"text": "mot coup-\n\né\n\n12\n\nSuite."})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cleaned"], "mot coupé\n\nSuite.")
+
+    def test_llm_endpoint_returns_unaccepted_proposal(self):
+        with patch("app.main.propose_with_llm", return_value="Texte proposé") as proposer:
+            response = self.client.post("/api/audiobook/llm-propose", data={"text": "Texte original"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["proposed"], "Texte proposé")
+        self.assertFalse(response.json()["accepted"])
+        proposer.assert_called_once()
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")

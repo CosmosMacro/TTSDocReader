@@ -19,6 +19,16 @@ class Chapter:
     index: int = 0
 
 
+@dataclass(frozen=True)
+class ChapterReview:
+    """Heuristic review metadata used before an expensive conversion."""
+
+    kind: str
+    confidence: float
+    selected: bool
+    group: str
+
+
 @dataclass
 class Book:
     title: str
@@ -243,6 +253,53 @@ def split_text_into_chapters(text: str) -> list[Chapter]:
         body = clean[start:end].strip()
         chapters.append(Chapter(title=match.group("title").strip(), text=body, index=len(chapters) + 1))
     return chapters
+
+
+def _normalized_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9àâçéèêëîïôùûüÿœæ ]", " ", title.casefold())
+
+
+def classify_chapter(chapter: Chapter) -> ChapterReview:
+    """Classify an item conservatively; uncertain items require human review."""
+    title = _normalized_title(chapter.title)
+    text = normalize_text(chapter.text)
+    words = len(text.split())
+    compact = re.sub(r"\s+", " ", text).casefold()
+    if any(term in title for term in ("table des matières", "table of contents", "sommaire", "contents")):
+        return ChapterReview("toc", 0.99, False, "Éléments préliminaires")
+    if any(term in title for term in ("copyright", "page de titre", "title page", "couverture", "cover")):
+        return ChapterReview("front_matter", 0.97, False, "Éléments préliminaires")
+    if any(term in title for term in ("références", "references", "bibliographie", "bibliography", "index")):
+        return ChapterReview("references", 0.95, False, "Éléments optionnels")
+    if any(term in title for term in ("glossaire", "glossary")):
+        return ChapterReview("glossary", 0.95, False, "Éléments optionnels")
+    if any(term in title for term in ("annexe", "appendix")):
+        return ChapterReview("appendix", 0.9, False, "Éléments optionnels")
+    if re.search(r"\b(préface|preface|avant propos|remerciements|acknowledg|liste des auteurs|about the author)\b", title):
+        return ChapterReview("front_matter", 0.9, False, "Éléments préliminaires")
+    if re.fullmatch(r"(?:chapitre|chapter|section|partie|part)\s+\d+", title) and words < 40:
+        return ChapterReview("unknown", 0.45, False, "À vérifier")
+    if re.search(r"\b(chapitre|chapter)\s+\d+\b", title):
+        return ChapterReview("chapter", 0.94 if words >= 40 else 0.7, True, "Contenu principal")
+    if re.search(r"\b(partie|part)\s+\w+", title):
+        return ChapterReview("part", 0.88, True, "Contenu principal")
+    if words < 40 or len(compact) < 160:
+        return ChapterReview("unknown", 0.4, False, "À vérifier")
+    return ChapterReview("chapter", 0.65, True, "Contenu principal")
+
+
+def apply_chapter_selection(book: Book, selected: Iterable[bool]) -> Book:
+    """Keep selected chapters and reindex them for audiobook output."""
+    flags = list(selected)
+    if len(flags) != len(book.chapters):
+        raise ValueError(f"Expected {len(book.chapters)} chapter selections, got {len(flags)}")
+    chapters: list[Chapter] = []
+    for chapter, keep in zip(book.chapters, flags):
+        if keep:
+            chapters.append(Chapter(chapter.title, chapter.text, len(chapters) + 1))
+    if not chapters:
+        raise ValueError("At least one chapter must be selected")
+    return Book(book.title, book.author, book.source, chapters)
 
 
 def apply_chapter_titles(book: Book, titles: Iterable[str]) -> Book:

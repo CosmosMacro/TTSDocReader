@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from .audiobook import build_audiobook
-from .books import apply_chapter_titles, load_book
+from .books import apply_chapter_selection, apply_chapter_titles, classify_chapter, load_book
 from .config import settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
 from .pipeline import synthesize_document
@@ -317,14 +317,19 @@ async def legacy_tts_page():
 
 AUDIOBOOK_HTML = """
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTSDocReader Audiobook</title>
-<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.5rem .5rem .5rem 0}.chapter{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}.chapter span{min-width:2rem}.chapter input{flex:1}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
-<body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie les chapitres, puis génère les MP3 et le M4B.</p>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.5rem .5rem .5rem 0}.chapter{display:grid;grid-template-columns:auto 1fr auto;gap:.5rem;align-items:center;margin:.4rem 0;padding:.35rem;border-radius:8px}.chapter.low{background:#fff4d6}.chapter small{color:#667085}.group{margin:1rem 0}.group h3{margin:.5rem 0}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
+<body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie rapidement la structure, puis génère les MP3 et le M4B.</p>
 <section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><div id="summary"></div></section>
-<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><h2>Chapitres détectés</h2><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
+<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><div><button id="mainOnly" type="button">Contenu principal uniquement</button><button id="allNarrative" type="button">Inclure les éléments optionnels</button></div><h2>Revue de structure</h2><p class="muted">Les éléments ambigus sont décochés par défaut. Tu peux corriger les titres sans modifier le texte.</p><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
 <script>
 const $=id=>document.getElementById(id); let current=null;
-$('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+d.title+'</b> — '+d.chapters.length+' chapitre(s). Coût estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';$('chapters').innerHTML=d.chapters.map(c=>'<div class="chapter"><span>'+c.index+'</span><input type="text" value="'+c.title.replaceAll('&','&amp;').replaceAll('"','&quot;')+'"></div>').join('');$('settings').hidden=false;};
-$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}const f=$('file').files[0];const titles=[...$('chapters').querySelectorAll('input')].map(x=>x.value);const fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('titles_json',JSON.stringify(titles));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
+const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small></div>`).join('')}</div>`).join('');}
+function setSelection(predicate){current.chapters.forEach(c=>c.selected=predicate(c));render();}
+$('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+esc(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+esc(d.title)+'</b> — '+d.chapters.length+' unité(s). Sélection proposée: '+d.chapters.filter(c=>c.selected).length+' · Coût total estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';render();$('settings').hidden=false;};
+$('mainOnly').onclick=()=>setSelection(c=>c.group==='Contenu principal');
+$('allNarrative').onclick=()=>setSelection(c=>c.kind!=='toc'&&c.kind!=='front_matter');
+$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}current.chapters.forEach((c,i)=>{const pick=document.querySelector(`.pick[data-i="${i}"]`),title=document.querySelector(`.title[data-i="${i}"]`);c.selected=pick.checked;c.title=title.value;});const f=$('file').files[0];const titles=current.chapters.map(c=>c.title);const selected=current.chapters.map(c=>c.selected);const fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('titles_json',JSON.stringify(titles));fd.append('selected_json',JSON.stringify(selected));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
 </script></body></html>
 """
 
@@ -341,7 +346,8 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
     path.write_bytes(await file.read())
     try:
         book = load_book(path)
-        return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text} for c in book.chapters]}
+        reviews = [classify_chapter(c) for c in book.chapters]
+        return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text, "kind": r.kind, "confidence": r.confidence, "selected": r.selected, "group": r.group} for c, r in zip(book.chapters, reviews)]}
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -352,6 +358,7 @@ async def synthesize_audiobook(
     model: str = Form("s2.1-pro-free"),
     voice: str | None = Form(None),
     titles_json: str = Form("[]"),
+    selected_json: str = Form("[]"),
     confirm_egress: bool = Form(False),
 ):
     if not confirm_egress:
@@ -365,10 +372,15 @@ async def synthesize_audiobook(
     try:
         book = load_book(path)
         titles = json.loads(titles_json)
+        selected = json.loads(selected_json)
         if titles:
             if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
                 raise ValueError("titles_json must be a JSON array of strings")
             book = apply_chapter_titles(book, titles)
+        if selected:
+            if not isinstance(selected, list) or not all(isinstance(item, bool) for item in selected):
+                raise ValueError("selected_json must be a JSON array of booleans")
+            book = apply_chapter_selection(book, selected)
         provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
         book_output_dir = Path(settings.output_dir) / "audiobooks" / path.stem
         result = build_audiobook(book, book_output_dir, provider, voice=voice or None)

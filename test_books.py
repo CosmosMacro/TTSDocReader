@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from app.books import Book, Chapter, apply_chapter_titles, load_book
+from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, classify_chapter, load_book
 
 
 class BookImportTests(unittest.TestCase):
@@ -42,6 +42,26 @@ class BookImportTests(unittest.TestCase):
         corrected = apply_chapter_titles(book, ["Corrected title"])
         self.assertEqual(corrected.chapters[0].title, "Corrected title")
         self.assertEqual(corrected.chapters[0].text, "Body")
+
+    def test_hybrid_classifier_groups_non_narrative_and_keeps_real_chapters(self):
+        front = Chapter("Table des matières", "Chapitre 1 ...", 1)
+        real = Chapter("Chapitre 1 - Bases", "Long contenu clinique. " * 30, 2)
+        unknown = Chapter("Chapitre 13", "", 3)
+        self.assertEqual(classify_chapter(front).kind, "toc")
+        self.assertFalse(classify_chapter(front).selected)
+        self.assertEqual(classify_chapter(real).kind, "chapter")
+        self.assertTrue(classify_chapter(real).selected)
+        self.assertEqual(classify_chapter(unknown).kind, "unknown")
+        self.assertFalse(classify_chapter(unknown).selected)
+
+    def test_chapter_selection_filters_without_reindexing_gaps(self):
+        book = Book("Book", None, Path("book.epub"), [
+            Chapter("Preface", "intro", 1),
+            Chapter("Chapter 1", "body", 2),
+        ])
+        selected = apply_chapter_selection(book, [False, True])
+        self.assertEqual([c.title for c in selected.chapters], ["Chapter 1"])
+        self.assertEqual(selected.chapters[0].index, 1)
 
 
 if __name__ == "__main__":

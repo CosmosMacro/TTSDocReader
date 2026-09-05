@@ -36,6 +36,9 @@ class AudiobookWebTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["title"], "Test Audiobook MVP")
         self.assertEqual(len(data["chapters"]), 4)
+        self.assertIn("kind", data["chapters"][0])
+        self.assertIn("confidence", data["chapters"][0])
+        self.assertIn("selected", data["chapters"][0])
 
     def test_synthesis_requires_explicit_consent(self):
         with self.fixture.open("rb") as book:

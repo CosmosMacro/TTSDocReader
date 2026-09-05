@@ -21,9 +21,9 @@ class BookImportTests(unittest.TestCase):
                       <manifest><item id='nav' href='nav.xhtml' media-type='application/xhtml+xml' properties='nav'/><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest>
                       <spine><itemref idref='c1'/><itemref idref='c2'/></spine>
                     </package>""")
-                z.writestr("OPS/chapter1.xhtml", "<html><body><h1>Titre interne erroné</h1><p>Premier chapitre.</p></body></html>")
-                z.writestr("OPS/chapter2.xhtml", "<html><body><h1>Conclusion interne</h1><p>Dernier chapitre.</p></body></html>")
-                z.writestr("OPS/nav.xhtml", "<html><body><nav epub:type='toc'><ol><li><a href='chapter1.xhtml'>Introduction clinique</a></li><li><a href='chapter2.xhtml'>Conclusion clinique</a></li></ol></nav></body></html>")
+                z.writestr("OPS/chapter1.xhtml", "<html><body><section id='s1'><h1>Titre interne erroné</h1><p>Premier chapitre.</p></section></body></html>")
+                z.writestr("OPS/chapter2.xhtml", "<html><body><section id='s2'><h1>Conclusion interne</h1><p>Dernier chapitre.</p></section></body></html>")
+                z.writestr("OPS/nav.xhtml", "<html><body><nav epub:type='toc'><ol><li><a href='chapter1.xhtml#s1'>Introduction clinique</a></li><li><a href='chapter2.xhtml#s2'>Conclusion clinique</a></li></ol></nav></body></html>")
             book = load_book(epub)
             self.assertEqual(book.title, "Psychiatrie en pratique")
             self.assertEqual(book.author, "Dr Test")

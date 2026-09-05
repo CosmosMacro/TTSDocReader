@@ -124,10 +124,18 @@ def _resolve_zip_path(base: str, href: str) -> str:
     return posixpath.normpath(posixpath.join(posixpath.dirname(base), href))
 
 
-def _navigation_titles(archive: ZipFile, opf_path: str, items: dict[str, tuple[str, str]]) -> tuple[dict[str, str], set[str]]:
-    """Return content-path -> title mappings and navigation document paths."""
-    titles: dict[str, str] = {}
+def _navigation_entries(archive: ZipFile, opf_path: str, items: dict[str, tuple[str, str]]) -> tuple[dict[str, list[tuple[str | None, str]]], set[str]]:
+    """Return content-path -> ordered (fragment, title) entries from EPUB navigation."""
+    from urllib.parse import unquote
+
+    entries: dict[str, list[tuple[str | None, str]]] = {}
     nav_paths: set[str] = set()
+
+    def add_entry(base: str, target: str, label: str) -> None:
+        target_path, _, fragment = target.partition("#")
+        path = _resolve_zip_path(base, target_path)
+        entries.setdefault(path, []).append((unquote(fragment) or None, label))
+
     for item_id, (href, properties) in items.items():
         if "nav" in properties.split():
             nav_paths.add(href)
@@ -135,7 +143,7 @@ def _navigation_titles(archive: ZipFile, opf_path: str, items: dict[str, tuple[s
                 parser = _NavigationParser()
                 parser.feed(archive.read(href).decode("utf-8", errors="replace"))
                 for target, label in parser.links:
-                    titles[_resolve_zip_path(href, target)] = label
+                    add_entry(href, target, label)
             except (KeyError, ValueError):
                 pass
     for item_id, (href, media_type) in items.items():
@@ -149,10 +157,34 @@ def _navigation_titles(archive: ZipFile, opf_path: str, items: dict[str, tuple[s
                 label = next((normalize_text(x.text or "") for x in point.iter() if _local(x.tag) == "text" and x.text), "")
                 content = next((x.attrib.get("src") for x in point.iter() if _local(x.tag) == "content" and x.attrib.get("src")), None)
                 if label and content:
-                    titles[_resolve_zip_path(href, content)] = label
+                    add_entry(href, content, label)
         except (ET.ParseError, KeyError):
             pass
-    return titles, nav_paths
+    return entries, nav_paths
+
+
+def _parse_navigated_sections(raw: str, entries: list[tuple[str | None, str]]) -> list[tuple[str, str]]:
+    """Extract sections delimited by EPUB navigation fragment anchors."""
+    located: list[tuple[int, str]] = []
+    for fragment, title in entries:
+        if fragment is None:
+            continue
+        pattern = re.compile(r"(?:id|name)\s*=\s*['\"]" + re.escape(fragment) + r"['\"]", re.IGNORECASE)
+        match = pattern.search(raw)
+        if match:
+            located.append((raw.rfind("<", 0, match.start()), title))
+    if not located:
+        return []
+    located.sort(key=lambda item: item[0])
+    sections: list[tuple[str, str]] = []
+    for index, (start, title) in enumerate(located):
+        end = located[index + 1][0] if index + 1 < len(located) else len(raw)
+        parser = _XhtmlText()
+        parser.feed(raw[start:end])
+        text = parser.text
+        if text:
+            sections.append((title, text))
+    return sections
 
 
 def _parse_epub(path: Path) -> Book:
@@ -174,18 +206,25 @@ def _parse_epub(path: Path) -> Book:
                 item_meta[item_id] = (href, item.attrib.get("properties", "") or item.attrib.get("media-type", ""))
 
         spine_ids = [item.attrib.get("idref") for item in opf.iter() if _local(item.tag) == "itemref"]
-        navigation_titles, navigation_paths = _navigation_titles(archive, opf_path, item_meta)
+        navigation_entries, navigation_paths = _navigation_entries(archive, opf_path, item_meta)
         chapters: list[Chapter] = []
         for source_index, item_id in enumerate(spine_ids):
             href = manifest.get(item_id or "")
             if not href or href in navigation_paths or href not in archive.namelist():
                 continue
+            raw = archive.read(href).decode("utf-8", errors="replace")
+            nav_sections = _parse_navigated_sections(raw, navigation_entries.get(href, []))
+            if nav_sections:
+                for title, text in nav_sections:
+                    chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
+                continue
             parser = _XhtmlText()
-            parser.feed(archive.read(href).decode("utf-8", errors="replace"))
+            parser.feed(raw)
             text = parser.text
             if not text:
                 continue
-            title = navigation_titles.get(href) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
+            entries = navigation_entries.get(href, [])
+            title = next((title for fragment, title in entries if fragment is None), None) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
             chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
 
         if not chapters:

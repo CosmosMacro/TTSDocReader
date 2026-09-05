@@ -302,6 +302,27 @@ def apply_chapter_selection(book: Book, selected: Iterable[bool]) -> Book:
     return Book(book.title, book.author, book.source, chapters)
 
 
+def apply_structure(book: Book, entries: Iterable[dict]) -> Book:
+    """Build a book from a reviewed structure manifest."""
+    chapters: list[Chapter] = []
+    raw_entries = list(entries)
+    if not raw_entries:
+        raise ValueError("Structure manifest contains no units")
+    for entry in raw_entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("title"), str) or not isinstance(entry.get("text"), str):
+            raise ValueError("Each structure unit needs string title and text")
+        if not isinstance(entry.get("selected", True), bool):
+            raise ValueError("Each structure unit needs a boolean selected flag")
+        chapters.append(Chapter(entry["title"].strip() or "Unité sans titre", entry["text"], len(chapters) + 1))
+    selected_chapters: list[Chapter] = []
+    for chapter, entry in zip(chapters, raw_entries):
+        if entry.get("selected", True):
+            selected_chapters.append(Chapter(chapter.title, chapter.text, len(selected_chapters) + 1))
+    if not selected_chapters:
+        raise ValueError("At least one structure unit must be selected")
+    return Book(book.title, book.author, book.source, selected_chapters)
+
+
 def apply_chapter_titles(book: Book, titles: Iterable[str]) -> Book:
     """Return a copy with user-corrected titles while preserving chapter text."""
     corrected = list(titles)

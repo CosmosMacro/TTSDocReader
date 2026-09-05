@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from .audiobook import build_audiobook
-from .books import apply_chapter_selection, apply_chapter_titles, classify_chapter, load_book
+from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 from .config import settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
 from .pipeline import synthesize_document
@@ -317,19 +317,26 @@ async def legacy_tts_page():
 
 AUDIOBOOK_HTML = """
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTSDocReader Audiobook</title>
-<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.5rem .5rem .5rem 0}.chapter{display:grid;grid-template-columns:auto 1fr auto;gap:.5rem;align-items:center;margin:.4rem 0;padding:.35rem;border-radius:8px}.chapter.low{background:#fff4d6}.chapter small{color:#667085}.group{margin:1rem 0}.group h3{margin:.5rem 0}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
+<style>body{font-family:system-ui,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button,textarea{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.35rem .35rem .35rem 0}.chapter{display:grid;grid-template-columns:auto 1fr auto;gap:.5rem;align-items:center;margin:.4rem 0;padding:.45rem;border-radius:8px}.chapter.low{background:#fff4d6}.chapter small{color:#667085}.chapter textarea{width:100%;min-height:4rem;box-sizing:border-box}.group{margin:1rem 0}.group h3{margin:.5rem 0}.tools{white-space:nowrap}.preview{grid-column:2/-1;background:#f7f8fc;padding:.6rem;white-space:pre-wrap;max-height:12rem;overflow:auto}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
 <body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie rapidement la structure, puis génère les MP3 et le M4B.</p>
-<section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><div id="summary"></div></section>
-<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><div><button id="mainOnly" type="button">Contenu principal uniquement</button><button id="allNarrative" type="button">Inclure les éléments optionnels</button></div><h2>Revue de structure</h2><p class="muted">Les éléments ambigus sont décochés par défaut. Tu peux corriger les titres sans modifier le texte.</p><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
+<section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><label>Manifeste existant (optionnel)</label><input id="manifestFile" type="file" accept=".structure.json,.json"><button id="loadManifest" type="button">Charger le manifeste</button><div id="summary"></div></section>
+<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><div><button id="mainOnly" type="button">Contenu principal uniquement</button><button id="allNarrative" type="button">Inclure les éléments optionnels</button><button id="saveManifest" type="button">Sauvegarder le manifeste</button></div><h2>Revue de structure</h2><p class="muted">Aperçu, déplacement, fusion et séparation sont réversibles tant que tu n’as pas généré l’audiobook.</p><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
 <script>
-const $=id=>document.getElementById(id); let current=null;
+const $=id=>document.getElementById(id);let current=null;
 const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small></div>`).join('')}</div>`).join('');}
-function setSelection(predicate){current.chapters.forEach(c=>c.selected=predicate(c));render();}
+function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;});}
+function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button></div><details class="preview"><summary>Aperçu du texte</summary>${esc(c.text.slice(0,3000))}${c.text.length>3000?'…':''}</details></div>`).join('')}</div>`).join('');}
+function setSelection(predicate){syncDom();current.chapters.forEach(c=>c.selected=predicate(c));render();}
+function structure(){syncDom();return current.chapters.map(c=>({title:c.title,text:c.text,selected:!!c.selected,kind:c.kind,group:c.group,confidence:c.confidence}));}
+function move(i,delta){syncDom();const j=i+delta;if(j<0||j>=current.chapters.length)return;[current.chapters[i],current.chapters[j]]=[current.chapters[j],current.chapters[i]];render();}
+function merge(i){syncDom();if(i>=current.chapters.length-1)return;const a=current.chapters[i],b=current.chapters[i+1];a.title=a.title+' / '+b.title;a.text=a.text+'\n\n'+b.text;a.selected=a.selected||b.selected;a.confidence=Math.min(a.confidence,b.confidence);current.chapters.splice(i+1,1);render();}
+function split(i){syncDom();const c=current.chapters[i],at=prompt('Texte qui commence la seconde unité (copie une phrase ou un titre)');if(!at)return;const pos=c.text.indexOf(at);if(pos<=0){alert('Marqueur introuvable ou placé au début.');return;}const first=c.text.slice(0,pos).trim(),second=c.text.slice(pos).trim();if(!first||!second)return;c.text=first;current.chapters.splice(i+1,0,{...c,title:c.title+' (suite)',text:second,confidence:Math.min(c.confidence,.6)});render();}
+$('chapters').onclick=e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action;if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);};
+$('loadManifest').onclick=()=>{const f=$('manifestFile').files[0];if(!f)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(!Array.isArray(d.units)||!d.units.length)throw new Error('Le manifeste ne contient aucune unité.');current={title:d.title||'Document',author:d.author||null,estimated_cost_usd:0,chapters:d.units.map((c,i)=>({...c,index:i+1,kind:c.kind||'unknown',group:c.group||'À vérifier',confidence:Number(c.confidence||.5),selected:Boolean(c.selected)}))};$('summary').innerHTML='<p><b>'+esc(current.title)+'</b> — manifeste chargé. Sélection : '+current.chapters.filter(c=>c.selected).length+'/'+current.chapters.length+'</p>';render();$('settings').hidden=false;}catch(e){$('summary').innerHTML='<p class="error">'+esc(e.message||'Manifeste invalide')+'</p>';}};reader.readAsText(f);};
 $('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+esc(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+esc(d.title)+'</b> — '+d.chapters.length+' unité(s). Sélection proposée: '+d.chapters.filter(c=>c.selected).length+' · Coût total estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';render();$('settings').hidden=false;};
-$('mainOnly').onclick=()=>setSelection(c=>c.group==='Contenu principal');
-$('allNarrative').onclick=()=>setSelection(c=>c.kind!=='toc'&&c.kind!=='front_matter');
-$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}current.chapters.forEach((c,i)=>{const pick=document.querySelector(`.pick[data-i="${i}"]`),title=document.querySelector(`.title[data-i="${i}"]`);c.selected=pick.checked;c.title=title.value;});const f=$('file').files[0];const titles=current.chapters.map(c=>c.title);const selected=current.chapters.map(c=>c.selected);const fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('titles_json',JSON.stringify(titles));fd.append('selected_json',JSON.stringify(selected));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
+$('mainOnly').onclick=()=>setSelection(c=>c.group==='Contenu principal');$('allNarrative').onclick=()=>setSelection(c=>c.kind!=='toc'&&c.kind!=='front_matter');
+$('saveManifest').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);fd.append('structure_json',JSON.stringify(structure()));$('status').textContent='Sauvegarde du manifeste…';const r=await fetch('/api/audiobook/manifest',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}const blob=new Blob([JSON.stringify(d.manifest,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name.replace(/[.][^.]+$/,'')+'.structure.json';a.click();$('status').textContent='Manifeste sauvegardé : '+d.path;};
+$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}const f=$('file').files[0],fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('structure_json',JSON.stringify(structure()));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
 </script></body></html>
 """
 
@@ -352,6 +359,37 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
+@app.post("/api/audiobook/manifest")
+async def save_audiobook_manifest(
+    file: UploadFile = File(...),
+    structure_json: str = Form("[]"),
+):
+    """Persist a reviewed structure locally without contacting a TTS provider."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ttsdocr-manifest-"))
+    path = tmp_dir / (Path(file.filename or "upload").name)
+    path.write_bytes(await file.read())
+    try:
+        book = load_book(path)
+        structure = json.loads(structure_json)
+        if not isinstance(structure, list):
+            raise ValueError("structure_json must be a JSON array")
+        reviewed = apply_structure(book, structure)
+        manifest = {
+            "version": 1,
+            "title": book.title,
+            "author": book.author,
+            "source_filename": path.name,
+            "units": structure,
+        }
+        manifest_dir = Path(settings.output_dir) / "audiobooks" / "manifests"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_dir / f"{path.stem}.structure.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"saved": True, "path": str(manifest_path), "title": reviewed.title, "selected_units": len(reviewed.chapters), "manifest": manifest}
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
 @app.post("/api/audiobook/synthesize")
 async def synthesize_audiobook(
     file: UploadFile = File(...),
@@ -359,6 +397,7 @@ async def synthesize_audiobook(
     voice: str | None = Form(None),
     titles_json: str = Form("[]"),
     selected_json: str = Form("[]"),
+    structure_json: str = Form("[]"),
     confirm_egress: bool = Form(False),
 ):
     if not confirm_egress:
@@ -371,16 +410,22 @@ async def synthesize_audiobook(
     path.write_bytes(await file.read())
     try:
         book = load_book(path)
-        titles = json.loads(titles_json)
-        selected = json.loads(selected_json)
-        if titles:
-            if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
-                raise ValueError("titles_json must be a JSON array of strings")
-            book = apply_chapter_titles(book, titles)
-        if selected:
-            if not isinstance(selected, list) or not all(isinstance(item, bool) for item in selected):
-                raise ValueError("selected_json must be a JSON array of booleans")
-            book = apply_chapter_selection(book, selected)
+        if structure_json != "[]":
+            structure = json.loads(structure_json)
+            if not isinstance(structure, list):
+                raise ValueError("structure_json must be a JSON array")
+            book = apply_structure(book, structure)
+        else:
+            titles = json.loads(titles_json)
+            selected = json.loads(selected_json)
+            if titles:
+                if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
+                    raise ValueError("titles_json must be a JSON array of strings")
+                book = apply_chapter_titles(book, titles)
+            if selected:
+                if not isinstance(selected, list) or not all(isinstance(item, bool) for item in selected):
+                    raise ValueError("selected_json must be a JSON array of booleans")
+                book = apply_chapter_selection(book, selected)
         provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
         book_output_dir = Path(settings.output_dir) / "audiobooks" / path.stem
         result = build_audiobook(book, book_output_dir, provider, voice=voice or None)

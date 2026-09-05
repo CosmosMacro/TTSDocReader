@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, classify_chapter, load_book
+from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 
 
 class BookImportTests(unittest.TestCase):
@@ -62,6 +62,14 @@ class BookImportTests(unittest.TestCase):
         selected = apply_chapter_selection(book, [False, True])
         self.assertEqual([c.title for c in selected.chapters], ["Chapter 1"])
         self.assertEqual(selected.chapters[0].index, 1)
+
+    def test_apply_structure_supports_edited_units_and_selection(self):
+        book = Book("Book", None, Path("book.epub"), [Chapter("Original", "old", 1)])
+        edited = apply_structure(book, [{"title": "Merged", "text": "new text", "selected": True}])
+        self.assertEqual(edited.chapters[0].title, "Merged")
+        self.assertEqual(edited.chapters[0].text, "new text")
+        with self.assertRaises(ValueError):
+            apply_structure(book, [])
 
 
 if __name__ == "__main__":

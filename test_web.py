@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import unittest
 from tempfile import TemporaryDirectory
@@ -7,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, settings
 
 
 class AudiobookWebTests(unittest.TestCase):
@@ -20,6 +21,9 @@ class AudiobookWebTests(unittest.TestCase):
         response = self.client.get("/audiobook")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Audiobook", response.text)
+        self.assertIn("Aperçu du texte", response.text)
+        self.assertIn("Fusionner", response.text)
+        self.assertIn("Sauvegarder le manifeste", response.text)
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")
@@ -39,6 +43,18 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("kind", data["chapters"][0])
         self.assertIn("confidence", data["chapters"][0])
         self.assertIn("selected", data["chapters"][0])
+
+    def test_manifest_endpoint_persists_reviewed_structure_without_api_key(self):
+        structure = [{"title": "Chapitre retenu", "text": "Texte narratif", "selected": True}]
+        with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp):
+            with self.fixture.open("rb") as book:
+                response = self.client.post("/api/audiobook/manifest", data={"structure_json": json.dumps(structure)}, files={"file": ("book.epub", book, "application/epub+zip")})
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            manifest_path = Path(data["path"])
+            self.assertTrue(manifest_path.exists())
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["units"][0]["title"], "Chapitre retenu")
 
     def test_synthesis_requires_explicit_consent(self):
         with self.fixture.open("rb") as book:

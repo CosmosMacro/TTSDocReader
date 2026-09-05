@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
+from .audiobook import build_audiobook
+from .books import apply_chapter_titles, load_book
 from .config import settings
+from .fish_audio import FishAudioProvider, estimate_cost_usd
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
 
@@ -302,6 +308,74 @@ INDEX_HTML = f"""
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return INDEX_HTML
+
+
+AUDIOBOOK_HTML = """
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTSDocReader Audiobook</title>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.5rem .5rem .5rem 0}.chapter{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}.chapter span{min-width:2rem}.chapter input{flex:1}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
+<body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie les chapitres, puis génère les MP3 et le M4B.</p>
+<section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><div id="summary"></div></section>
+<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><h2>Chapitres détectés</h2><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
+<script>
+const $=id=>document.getElementById(id); let current=null;
+$('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+d.title+'</b> — '+d.chapters.length+' chapitre(s). Coût estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';$('chapters').innerHTML=d.chapters.map(c=>'<div class="chapter"><span>'+c.index+'</span><input type="text" value="'+c.title.replaceAll('&','&amp;').replaceAll('"','&quot;')+'"></div>').join('');$('settings').hidden=false;};
+$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}const f=$('file').files[0];const titles=[...$('chapters').querySelectorAll('input')].map(x=>x.value);const fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('titles_json',JSON.stringify(titles));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
+</script></body></html>
+"""
+
+
+@app.get("/audiobook", response_class=HTMLResponse)
+async def audiobook_page():
+    return AUDIOBOOK_HTML
+
+
+@app.post("/api/audiobook/inspect")
+async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.1-pro-free")):
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ttsdocr-inspect-"))
+    path = tmp_dir / (Path(file.filename or "upload").name)
+    path.write_bytes(await file.read())
+    try:
+        book = load_book(path)
+        return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text} for c in book.chapters]}
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.post("/api/audiobook/synthesize")
+async def synthesize_audiobook(
+    file: UploadFile = File(...),
+    model: str = Form("s2.1-pro-free"),
+    voice: str | None = Form(None),
+    titles_json: str = Form("[]"),
+    confirm_egress: bool = Form(False),
+):
+    if not confirm_egress:
+        return JSONResponse({"detail": "Explicit confirmation required before sending text to Fish Audio."}, status_code=400)
+    api_key = os.getenv("FISH_API_KEY", "")
+    if not api_key:
+        return JSONResponse({"detail": "FISH_API_KEY is not configured on this computer."}, status_code=400)
+    work_dir = Path(tempfile.mkdtemp(prefix="ttsdocr-audiobook-"))
+    path = work_dir / (Path(file.filename or "upload").name)
+    path.write_bytes(await file.read())
+    try:
+        book = load_book(path)
+        titles = json.loads(titles_json)
+        if titles:
+            if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
+                raise ValueError("titles_json must be a JSON array of strings")
+            book = apply_chapter_titles(book, titles)
+        provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
+        result = build_audiobook(book, work_dir / "output", provider, voice=voice or None)
+        archive = work_dir / "audiobook-output.zip"
+        with ZipFile(archive, "w", ZIP_DEFLATED) as z:
+            for output_file in result.m4b.parent.iterdir():
+                if output_file.is_file() and output_file.suffix.lower() in {".mp3", ".m4b", ".json"}:
+                    z.write(output_file, output_file.name)
+        return FileResponse(archive.as_posix(), filename=f"{book.title}.zip", media_type="application/zip")
+    except (ValueError, RuntimeError, OSError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
 
 
 @app.post("/synthesize")

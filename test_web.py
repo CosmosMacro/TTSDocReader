@@ -35,6 +35,7 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn(":fullscreen", response.text)
         self.assertIn("flex:1", response.text)
         self.assertIn("min-height:24rem", response.text)
+        self.assertIn("editor-fullscreen", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -72,6 +73,13 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["api_key_configured"])
         self.assertNotIn("secret-value", response.text)
+
+    def test_groq_key_auto_selects_groq_defaults(self):
+        with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp), patch.object(settings, "llm_base_url", "http://127.0.0.1:1234/v1"), patch.object(settings, "llm_model", "local-model"), patch.object(settings, "llm_api_key", ""):
+            response = self.client.post("/api/settings/llm", data={"base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "api_key": "gsk_test_key"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["base_url"], "https://api.groq.com/openai/v1")
+        self.assertEqual(response.json()["model"], "llama-3.3-70b-versatile")
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")

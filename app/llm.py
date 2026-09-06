@@ -42,8 +42,14 @@ def propose_with_llm(
     try:
         with request.urlopen(req, timeout=180) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except (OSError, error.HTTPError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"LLM indisponible : {exc}") from exc
+    except error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        except OSError:
+            detail = str(exc)
+        raise RuntimeError(f"LLM HTTP {exc.code}: {detail}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"LLM indisponible à {base_url} : {exc}") from exc
     try:
         result = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:

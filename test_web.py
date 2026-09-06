@@ -36,6 +36,9 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("flex:1", response.text)
         self.assertIn("min-height:24rem", response.text)
         self.assertIn("editor-fullscreen", response.text)
+        self.assertIn("inline-diff", response.text)
+        self.assertIn("editor-toolbar", response.text)
+        self.assertIn("visibleWhitespace", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -64,6 +67,8 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200)
         data = preview.json()
         self.assertTrue(data["changes"])
+        self.assertTrue(data["segments"])
+        self.assertTrue(any(segment["kind"] == "equal" for segment in data["segments"]))
         applied = self.client.post("/api/audiobook/apply-diff", data={"original": original, "proposed": data["proposed"], "accepted_ids": "[]"})
         self.assertEqual(applied.json()["text"], original)
 

@@ -4,7 +4,7 @@ import unittest
 
 from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 from app.text_prepare import clean_for_speech
-from app.text_diff import apply_diff, make_diff
+from app.text_diff import apply_diff, make_diff, make_diff_segments
 
 
 class BookImportTests(unittest.TestCase):
@@ -69,7 +69,10 @@ class BookImportTests(unittest.TestCase):
         original = "Un mot coup-\n\né.\n\n42\n\nSuite."
         proposed = clean_for_speech(original)
         changes = make_diff(original, proposed)
+        segments = make_diff_segments(original, proposed)
         self.assertGreaterEqual(len(changes), 1)
+        self.assertTrue(any(segment["kind"] == "equal" for segment in segments))
+        self.assertEqual("".join(segment["original"] for segment in segments), original)
         self.assertEqual(apply_diff(original, proposed, {c["id"] for c in changes}), proposed)
         self.assertEqual(apply_diff(original, proposed, set()), original)
 

@@ -32,6 +32,8 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("Tout refuser", response.text)
         self.assertIn("Paramètres LLM", response.text)
         self.assertIn("Plein écran", response.text)
+        self.assertIn(":fullscreen", response.text)
+        self.assertIn("flex:1", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]

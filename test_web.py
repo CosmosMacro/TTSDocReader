@@ -94,15 +94,15 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertEqual(data["changes"], make_diff(data["original"], data["proposed"]))
 
     def test_llm_settings_do_not_return_the_secret(self):
-        with patch.object(settings, "llm_api_key", "secret-value"):
+        with patch.object(settings, "llm_api_key", "[REDACTED]"):
             response = self.client.get("/api/settings/llm")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["api_key_configured"])
-        self.assertNotIn("secret-value", response.text)
+        self.assertNotIn("[REDACTED]", response.text)
 
     def test_groq_key_auto_selects_groq_defaults(self):
         with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp), patch.object(settings, "llm_base_url", "http://127.0.0.1:1234/v1"), patch.object(settings, "llm_model", "local-model"), patch.object(settings, "llm_api_key", ""):
-            response = self.client.post("/api/settings/llm", data={"base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "api_key": "gsk_test_key"})
+            response = self.client.post("/api/settings/llm", data={"base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "api_key": "gsk_[REDACTED]"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["base_url"], "https://api.groq.com/openai/v1")
         self.assertEqual(response.json()["model"], "llama-3.3-70b-versatile")
@@ -155,7 +155,7 @@ class AudiobookWebTests(unittest.TestCase):
             manifest.write_text("{}")
             return SimpleNamespace(chapter_files=[mp3], m4b=m4b, manifest=manifest)
 
-        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"FISH_API_KEY": "test-key"}), patch("app.main.FishAudioProvider"), patch("app.main.build_audiobook", side_effect=fake_build):
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"FISH_API_KEY": "[REDACTED]"}), patch("app.main.FishAudioProvider"), patch("app.main.build_audiobook", side_effect=fake_build):
             from app.main import settings
             with patch.object(settings, "output_dir", tmp):
                 with self.fixture.open("rb") as book:

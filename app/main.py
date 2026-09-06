@@ -11,9 +11,9 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from .audiobook import build_audiobook
 from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
-from .config import save_local_llm_settings, settings
+from .config import migrate_legacy_llm_settings, repair_llm_base_url, save_local_llm_settings, settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
-from .llm import propose_with_llm
+from .llm import LLMError, list_models, propose_with_llm, test_connection, validate_base_url
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
 from .text_diff import apply_diff, make_diff, make_diff_segments
@@ -334,6 +334,7 @@ function visibleWhitespace(s){return esc(s).replaceAll(' ','·').replaceAll(Stri
 function changedText(s){return s.trim()?esc(s):visibleWhitespace(s);}
 function reviewHtml(c,i){if(!c.review)return '';const segments=c.review.segments||[];const flow=segments.map(seg=>{if(seg.kind==='equal')return `<span>${esc(seg.original)}</span>`;const change=c.review.changes.find(ch=>ch.id===seg.id),checked=change&&change.accepted?'checked':'';const pick=`<input class="diff-pick" data-unit="${i}" data-id="${seg.id}" type="checkbox" ${checked} title="Inclure cette modification">`;if(seg.kind==='insert')return `<label class="diff-unit">${pick}<ins>${changedText(seg.proposed)}</ins></label>`;if(seg.kind==='delete')return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del></label>`;return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del><ins>${changedText(seg.proposed)}</ins></label>`;}).join('');if(!c.review.changes.length)return `<div class="inline-diff">${esc(c.review.original)}</div><div class="review-actions"><b>Aucune modification détectée.</b><button type="button" data-action="cancel-review" data-i="${i}">Fermer</button></div>`;return `<div class="inline-diff">${flow}</div><div class="review-actions"><b>${c.review.mode==='llm'?'Proposition IA':'Nettoyage automatique'} :</b><button type="button" data-action="all-review" data-i="${i}">Tout accepter</button><button type="button" data-action="none-review" data-i="${i}">Tout refuser</button><button type="button" data-action="apply-review" data-i="${i}">Appliquer la sélection</button><button type="button" data-action="cancel-review" data-i="${i}">Annuler</button></div>`;}
 function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''} ${c.i===fullscreenIndex?'editor-fullscreen':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button><button type="button" data-action="fullscreen" data-i="${c.i}">${c.i===fullscreenIndex?'Quitter le plein écran':'Plein écran'}</button></div><details class="preview" ${c.i===fullscreenIndex?'open':''}><summary>Aperçu du texte / Modifier le texte</summary><div class="editor-toolbar"><button type="button" data-action="clean" data-i="${c.i}">Nettoyer automatiquement</button><button type="button" data-action="llm" data-i="${c.i}">Proposer avec IA</button>${c.error?`<span class="error">${esc(c.error)}</span>`:''}</div><div class="editor-body">${c.review?reviewHtml(c,c.i):`<textarea class="edit-text" data-i="${c.i}">${esc(c.text)}</textarea>`}</div></details></div>`).join('')}</div>`).join('');}
+function addCopyButtons(){document.querySelectorAll('.review-actions').forEach(a=>{if(a.querySelector('[data-action="copy-review"]'))return;const b=document.createElement('button');b.type='button';b.dataset.action='copy-review';b.dataset.i=a.closest('.chapter')?.querySelector('.diff-pick')?.dataset.unit||'';b.textContent='Copier la proposition';a.insertBefore(b,a.querySelector('[data-action="apply-review"]'));});}
 function setSelection(predicate){syncDom();current.chapters.forEach(c=>c.selected=predicate(c));render();}
 function structure(){syncDom();return current.chapters.map(c=>({title:c.title,text:c.text,selected:!!c.selected,kind:c.kind,group:c.group,confidence:c.confidence}));}
 function move(i,delta){syncDom();const j=i+delta;if(j<0||j>=current.chapters.length)return;[current.chapters[i],current.chapters[j]]=[current.chapters[j],current.chapters[i]];render();}
@@ -342,6 +343,13 @@ function split(i){syncDom();const c=current.chapters[i],at=prompt('Texte qui com
 $('chapters').onclick=async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action,c=current.chapters[i];if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);if(a==='fullscreen'){syncDom();fullscreenIndex=fullscreenIndex===i?null:i;render();return;}if(a==='all-review'||a==='none-review'){syncDom();c.review.changes.forEach(ch=>ch.accepted=a==='all-review');render();}if(a==='cancel-review'){syncDom();c.text=c.review.original;delete c.review;render();$('status').textContent='Proposition annulée.';}if(a==='apply-review'){syncDom();const accepted=c.review.changes.filter(ch=>ch.accepted).map(ch=>ch.id);const allAccepted=accepted.length===c.review.changes.length;if(allAccepted){c.text=c.review.proposed;delete c.review;render();$('status').textContent='Toutes les modifications ont été appliquées.';return;}const fd=new FormData();fd.append('original',c.review.original);fd.append('proposed',c.review.proposed);fd.append('accepted_ids',JSON.stringify(accepted));const r=await fetch('/api/audiobook/apply-diff',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}c.text=d.text;delete c.review;render();$('status').textContent='Modifications appliquées.';}if(a==='clean'||a==='llm'){syncDom();const fd=new FormData();fd.append('text',c.text);$('status').textContent=a==='clean'?'Préparation du diff…':'Proposition IA en cours…';const r=await fetch(a==='clean'?'/api/audiobook/cleanup-preview':'/api/audiobook/llm-propose',{method:'POST',body:fd}),d=await r.json();if(!r.ok){c.error=d.detail||`Erreur HTTP ${r.status}`;render();$('status').textContent=c.error;return;}delete c.error;c.review={original:d.original,proposed:d.proposed,changes:d.changes,segments:d.segments||[],mode:d.mode};render();$('status').textContent=a==='clean'?'Diff affiché dans le corps du texte : vérifie puis applique ou annule.':'Revue disponible : accepte ou refuse chaque changement.';}};
 $('llmSettingsBtn').onclick=async()=>{const r=await fetch('/api/settings/llm'),d=await r.json();$('llmBaseUrl').value=d.base_url;$('llmModel').value=d.model;$('llmKey').value='';$('llmStatus').textContent=d.api_key_configured?'Clé configurée localement.':'Aucune clé configurée.';$('llmDialog').showModal();};
 $('llmClose').onclick=()=>$('llmDialog').close();
+new MutationObserver(addCopyButtons).observe($('chapters'),{childList:true,subtree:true});$('chapters').addEventListener('click',async e=>{const b=e.target.closest('[data-action="copy-review"]');if(!b)return;const c=current.chapters[Number(b.dataset.i)];if(!c?.review)return;try{await navigator.clipboard.writeText(c.review.proposed);$('status').textContent='Proposition copiée sans les marques du diff.';}catch(_){$('status').textContent='Copie impossible : utilise Appliquer la sélection.';}});
+const llmModels=document.createElement('datalist');llmModels.id='llmModels';$('llmModel').setAttribute('list','llmModels');$('llmModel').after(llmModels);
+const llmProvider=document.createElement('select');llmProvider.id='llmProvider';[['groq','Groq'],['local','Local compatible OpenAI'],['custom','Personnalisé']].forEach(([value,label])=>{const o=document.createElement('option');o.value=value;o.textContent=label;llmProvider.append(o);});const providerLabel=document.createElement('label');providerLabel.textContent='Fournisseur';providerLabel.append(llmProvider);$('llmBaseUrl').before(providerLabel);llmProvider.onchange=()=>{if(llmProvider.value==='groq'){$('llmBaseUrl').value='https://api.groq.com/openai/v1';if($('llmModel').value==='local-model')$('llmModel').value='llama-3.3-70b-versatile';}if(llmProvider.value==='local')$('llmBaseUrl').value='http://127.0.0.1:1234/v1';};
+const llmTest=document.createElement('button');llmTest.type='button';llmTest.id='llmTest';llmTest.textContent='Tester la connexion';$('llmStatus').before(llmTest);
+const llmModelsBtn=document.createElement('button');llmModelsBtn.type='button';llmModelsBtn.id='llmModelsBtn';llmModelsBtn.textContent='Charger les modèles';$('llmStatus').before(llmModelsBtn);
+llmTest.onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('model',$('llmModel').value);fd.append('api_key',$('llmKey').value);$('llmStatus').textContent='Test de connexion en cours…';const r=await fetch('/api/settings/llm/test',{method:'POST',body:fd}),d=await r.json();$('llmStatus').textContent=r.ok?(d.model_available?'Connexion Groq réussie. Modèle disponible : '+d.model+'.':'Connexion réussie, mais le modèle configuré n’est pas disponible.'):(d.detail||'Échec du test de connexion.');};
+llmModelsBtn.onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('api_key',$('llmKey').value);$('llmStatus').textContent='Chargement des modèles…';const r=await fetch('/api/settings/llm/models',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('llmStatus').textContent=d.detail||'Erreur';return;}llmModels.innerHTML=d.models.map(m=>`<option value="${esc(m)}">`).join('');$('llmStatus').textContent=d.models.length+' modèle(s) disponible(s).';};
 $('llmSave').onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('model',$('llmModel').value);fd.append('api_key',$('llmKey').value);const r=await fetch('/api/settings/llm',{method:'POST',body:fd}),d=await r.json();$('llmStatus').textContent=r.ok?'Paramètres enregistrés.':(d.detail||'Erreur');if(r.ok)setTimeout(()=>$('llmDialog').close(),500);};
  $('loadManifest').onclick=()=>{const f=$('manifestFile').files[0];if(!f)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(!Array.isArray(d.units)||!d.units.length)throw new Error('Le manifeste ne contient aucune unité.');current={title:d.title||'Document',author:d.author||null,estimated_cost_usd:0,chapters:d.units.map((c,i)=>({...c,index:i+1,kind:c.kind||'unknown',group:c.group||'À vérifier',confidence:Number(c.confidence||.5),selected:Boolean(c.selected)}))};$('summary').innerHTML='<p><b>'+esc(current.title)+'</b> — manifeste chargé. Sélection : '+current.chapters.filter(c=>c.selected).length+'/'+current.chapters.length+'</p>';render();$('settings').hidden=false;}catch(e){$('summary').innerHTML='<p class="error">'+esc(e.message||'Manifeste invalide')+'</p>';}};reader.readAsText(f);};
 $('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+esc(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+esc(d.title)+'</b> — '+d.chapters.length+' unité(s). Sélection proposée: '+d.chapters.filter(c=>c.selected).length+' · Coût total estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';render();$('settings').hidden=false;};
@@ -393,8 +401,8 @@ async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = F
         )
         proposal = normalize_newlines(proposal)
         return {"original": original, "proposed": proposal, "changes": make_diff(original, proposal), "segments": make_diff_segments(original, proposal), "mode": "llm", "accepted": False}
-    except RuntimeError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=503)
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
 
 
 @app.post("/api/audiobook/cleanup-preview")
@@ -422,6 +430,30 @@ async def get_llm_settings():
     return {"base_url": settings.llm_base_url, "model": settings.llm_model, "api_key_configured": bool(settings.llm_api_key)}
 
 
+def _submitted_llm_credentials(base_url: str, api_key: str) -> tuple[str, str]:
+    return base_url.strip(), api_key.strip() or settings.llm_api_key
+
+
+@app.post("/api/settings/llm/models")
+async def get_llm_models(base_url: str = Form(...), api_key: str = Form("")):
+    try:
+        url, key = _submitted_llm_credentials(base_url, api_key)
+        return {"models": list_models(url, key)}
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
+
+
+@app.post("/api/settings/llm/test")
+async def test_llm_connection(base_url: str = Form(...), model: str = Form(...), api_key: str = Form("")):
+    try:
+        url, key = _submitted_llm_credentials(base_url, api_key)
+        validate_base_url(url)
+        result = test_connection(url, model.strip(), key)
+        return {"model": model.strip(), "model_available": result.model_available, "model_count": result.model_count, "api_key_configured": bool(key)}
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
+
+
 @app.post("/api/settings/llm")
 async def update_llm_settings(
     base_url: str = Form(...),
@@ -434,10 +466,8 @@ async def update_llm_settings(
     settings.llm_model = model.strip()
     if api_key.strip():
         settings.llm_api_key = api_key.strip()
-    if settings.llm_api_key.startswith("gsk_") and settings.llm_base_url in {"http://127.0.0.1:1234/v1", "http://localhost:1234/v1"}:
-        settings.llm_base_url = "https://api.groq.com/openai/v1"
-        if settings.llm_model == "local-model":
-            settings.llm_model = "llama-3.3-70b-versatile"
+    repair_llm_base_url()
+    migrate_legacy_llm_settings()
     save_local_llm_settings()
     return {"saved": True, "base_url": settings.llm_base_url, "model": settings.llm_model, "api_key_configured": bool(settings.llm_api_key)}
 

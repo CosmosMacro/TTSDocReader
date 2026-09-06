@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -38,6 +39,30 @@ class Settings:
 
 
 settings = Settings()
+
+
+def _llm_settings_path() -> Path:
+    return Path(settings.output_dir) / "llm_settings.json"
+
+
+def load_local_llm_settings() -> None:
+    try:
+        data = json.loads(_llm_settings_path().read_text(encoding="utf-8-sig"))
+        if isinstance(data, dict):
+            settings.llm_base_url = str(data.get("base_url", settings.llm_base_url))
+            settings.llm_model = str(data.get("model", settings.llm_model))
+            settings.llm_api_key = str(data.get("api_key", settings.llm_api_key))
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def save_local_llm_settings() -> None:
+    path = _llm_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"base_url": settings.llm_base_url, "model": settings.llm_model, "api_key": settings.llm_api_key}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+load_local_llm_settings()
 
 # Ensure output directory exists
 os.makedirs(settings.output_dir, exist_ok=True)

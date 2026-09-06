@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from .audiobook import build_audiobook
 from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
-from .config import settings
+from .config import save_local_llm_settings, settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
 from .llm import propose_with_llm
 from .pipeline import synthesize_document
@@ -427,6 +427,7 @@ async def update_llm_settings(
     settings.llm_model = model.strip()
     if api_key.strip():
         settings.llm_api_key = api_key.strip()
+    save_local_llm_settings()
     return {"saved": True, "base_url": settings.llm_base_url, "model": settings.llm_model, "api_key_configured": bool(settings.llm_api_key)}
 
 

@@ -32,13 +32,25 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("Tout refuser", response.text)
         self.assertIn("Paramètres LLM", response.text)
         self.assertIn("Plein écran", response.text)
-        self.assertIn(":fullscreen", response.text)
-        self.assertIn("flex:1", response.text)
+        self.assertIn("height:100dvh", response.text)
         self.assertIn("min-height:24rem", response.text)
         self.assertIn("editor-fullscreen", response.text)
         self.assertIn("inline-diff", response.text)
         self.assertIn("editor-toolbar", response.text)
         self.assertIn("visibleWhitespace", response.text)
+
+    def test_fullscreen_has_one_unambiguous_viewport_layout(self):
+        response = self.client.get("/audiobook")
+        css = response.text.split("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertNotIn(".chapter:fullscreen", css)
+        self.assertIn("grid-template-rows:auto auto minmax(0,1fr)", css)
+        self.assertIn(".chapter.editor-fullscreen .editor-body{min-height:0;height:auto", css)
+        self.assertIn(".chapter.editor-fullscreen .edit-text{height:100%;min-height:0", css)
+
+    def test_accepting_every_change_commits_the_proposal_directly(self):
+        response = self.client.get("/audiobook")
+        self.assertIn("const allAccepted=accepted.length===c.review.changes.length", response.text)
+        self.assertIn("c.text=c.review.proposed", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]

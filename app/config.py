@@ -52,6 +52,10 @@ def load_local_llm_settings() -> None:
             settings.llm_base_url = str(data.get("base_url", settings.llm_base_url))
             settings.llm_model = str(data.get("model", settings.llm_model))
             settings.llm_api_key = str(data.get("api_key", settings.llm_api_key))
+            if settings.llm_api_key.startswith("gsk_") and settings.llm_base_url in {"http://127.0.0.1:1234/v1", "http://localhost:1234/v1"}:
+                settings.llm_base_url = "https://api.groq.com/openai/v1"
+                if settings.llm_model == "local-model":
+                    settings.llm_model = "llama-3.3-70b-versatile"
     except (OSError, ValueError, TypeError):
         pass
 

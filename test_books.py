@@ -87,6 +87,18 @@ class BookImportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_structure(book, [])
 
+    def test_cleanup_and_accepted_diff_are_idempotent_for_windows_and_unix_newlines(self):
+        for original in (
+            "Mot coup-\r\n\r\nÃ©.\r\n\r\n12\r\n\r\nSuite.\r\n\r\n\r\nFin.",
+            "Mot coup-\n\nÃ©.\n\n12\n\nSuite.\n\n\nFin.",
+        ):
+            cleaned = clean_for_speech(original)
+            self.assertEqual(clean_for_speech(cleaned), cleaned)
+            changes = make_diff(original, cleaned)
+            applied = apply_diff(original, cleaned, {change["id"] for change in changes})
+            self.assertEqual(applied, cleaned)
+            self.assertEqual(make_diff(applied, clean_for_speech(applied)), [])
+
 
 if __name__ == "__main__":
     unittest.main()

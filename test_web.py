@@ -10,6 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import AUDIOBOOK_HTML, app, settings
+from app.text_diff import make_diff
 
 
 class AudiobookWebTests(unittest.TestCase):
@@ -39,13 +40,13 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("editor-toolbar", response.text)
         self.assertIn("visibleWhitespace", response.text)
 
-    def test_fullscreen_has_one_unambiguous_viewport_layout(self):
+    def test_fullscreen_layout_sizes_the_native_details_content(self):
         response = self.client.get("/audiobook")
         css = response.text.split("<style>", 1)[1].split("</style>", 1)[0]
         self.assertNotIn(".chapter:fullscreen", css)
-        self.assertIn("grid-template-rows:auto auto minmax(0,1fr)", css)
-        self.assertIn(".chapter.editor-fullscreen .editor-body{min-height:0;height:auto", css)
-        self.assertIn(".chapter.editor-fullscreen .edit-text{height:100%;min-height:0", css)
+        self.assertIn(".chapter.editor-fullscreen .preview::details-content", response.text)
+        self.assertIn(".chapter.editor-fullscreen .preview[open]{grid-template-rows:auto minmax(0,1fr)", response.text)
+        self.assertIn(".chapter.editor-fullscreen .editor-body{height:100%", response.text)
 
     def test_accepting_every_change_commits_the_proposal_directly(self):
         response = self.client.get("/audiobook")
@@ -83,6 +84,14 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertTrue(any(segment["kind"] == "equal" for segment in data["segments"]))
         applied = self.client.post("/api/audiobook/apply-diff", data={"original": original, "proposed": data["proposed"], "accepted_ids": "[]"})
         self.assertEqual(applied.json()["text"], original)
+
+    def test_cleanup_preview_canonicalizes_windows_newlines(self):
+        response = self.client.post("/api/audiobook/cleanup-preview", data={"text": "Mot coup-\r\n\r\né.\r\n\r\n12\r\n\r\nSuite."})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("\r", data["original"])
+        self.assertNotIn("\r", data["proposed"])
+        self.assertEqual(data["changes"], make_diff(data["original"], data["proposed"]))
 
     def test_llm_settings_do_not_return_the_secret(self):
         with patch.object(settings, "llm_api_key", "secret-value"):

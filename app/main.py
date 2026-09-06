@@ -17,7 +17,7 @@ from .llm import propose_with_llm
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
 from .text_diff import apply_diff, make_diff, make_diff_segments
-from .text_prepare import clean_for_speech
+from .text_prepare import clean_for_speech, normalize_newlines
 
 app = FastAPI(title="TTSDocReader")
 
@@ -325,10 +325,11 @@ AUDIOBOOK_HTML = """
 <section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><label>Manifeste existant (optionnel)</label><input id="manifestFile" type="file" accept=".structure.json,.json"><button id="loadManifest" type="button">Charger le manifeste</button><div id="summary"></div></section>
 <section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><div><button id="mainOnly" type="button">Contenu principal uniquement</button><button id="allNarrative" type="button">Inclure les éléments optionnels</button><button id="saveManifest" type="button">Sauvegarder le manifeste</button><button id="llmSettingsBtn" type="button">Paramètres LLM</button></div><h2>Revue de structure</h2><p class="muted">Aperçu, déplacement, fusion et séparation sont réversibles tant que tu n’as pas généré l’audiobook.</p><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
 <dialog id="llmDialog"><form method="dialog" class="llm-settings"><h2>Paramètres LLM</h2><label>URL du serveur compatible OpenAI</label><input id="llmBaseUrl" type="text" value="http://127.0.0.1:1234/v1"><label>Modèle</label><input id="llmModel" type="text" value="local-model"><label>Clé API (optionnelle, laissée vide pour conserver la clé actuelle)</label><input id="llmKey" type="password"><p class="muted">La clé est transmise uniquement au serveur local de TTSDocReader.</p><button id="llmSave" type="button">Enregistrer</button><button id="llmClose" type="button">Fermer</button><p id="llmStatus" class="muted"></p></form></dialog>
+<style>.chapter.editor-fullscreen .preview[open]{grid-template-rows:auto minmax(0,1fr)}.chapter.editor-fullscreen .preview::details-content{display:grid;grid-template-rows:auto minmax(0,1fr);height:100%;min-height:0}.chapter.editor-fullscreen .editor-body{height:100%;grid-template-rows:minmax(0,1fr)}</style>
 <script>
-const $=id=>document.getElementById(id);let current=null;let fullscreenIndex=null;
+const $=id=>document.getElementById(id);let current=null;let fullscreenIndex=null;const normalizeNewlines=s=>String(s).replaceAll('\\r\\n','\\n').replaceAll('\\r','\\n');
 const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`),e=document.querySelector(`.edit-text[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;if(e)c.text=e.value;if(c.review)c.review.changes.forEach(ch=>{const box=document.querySelector(`.diff-pick[data-unit="${i}"][data-id="${ch.id}"]`);if(box)ch.accepted=box.checked;});});}
+function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`),e=document.querySelector(`.edit-text[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;if(e)c.text=normalizeNewlines(e.value);if(c.review)c.review.changes.forEach(ch=>{const box=document.querySelector(`.diff-pick[data-unit="${i}"][data-id="${ch.id}"]`);if(box)ch.accepted=box.checked;});});}
 function visibleWhitespace(s){return esc(s).replaceAll(' ','·').replaceAll(String.fromCharCode(9),'⇥').replaceAll(String.fromCharCode(10),'↵<br>');}
 function changedText(s){return s.trim()?esc(s):visibleWhitespace(s);}
 function reviewHtml(c,i){if(!c.review)return '';const segments=c.review.segments||[];const flow=segments.map(seg=>{if(seg.kind==='equal')return `<span>${esc(seg.original)}</span>`;const change=c.review.changes.find(ch=>ch.id===seg.id),checked=change&&change.accepted?'checked':'';const pick=`<input class="diff-pick" data-unit="${i}" data-id="${seg.id}" type="checkbox" ${checked} title="Inclure cette modification">`;if(seg.kind==='insert')return `<label class="diff-unit">${pick}<ins>${changedText(seg.proposed)}</ins></label>`;if(seg.kind==='delete')return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del></label>`;return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del><ins>${changedText(seg.proposed)}</ins></label>`;}).join('');if(!c.review.changes.length)return `<div class="inline-diff">${esc(c.review.original)}</div><div class="review-actions"><b>Aucune modification détectée.</b><button type="button" data-action="cancel-review" data-i="${i}">Fermer</button></div>`;return `<div class="inline-diff">${flow}</div><div class="review-actions"><b>${c.review.mode==='llm'?'Proposition IA':'Nettoyage automatique'} :</b><button type="button" data-action="all-review" data-i="${i}">Tout accepter</button><button type="button" data-action="none-review" data-i="${i}">Tout refuser</button><button type="button" data-action="apply-review" data-i="${i}">Appliquer la sélection</button><button type="button" data-action="cancel-review" data-i="${i}">Annuler</button></div>`;}
@@ -373,7 +374,8 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
 async def cleanup_audiobook_text(text: str = Form(...)):
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
-    return {"original": text, "cleaned": clean_for_speech(text), "mode": "deterministic"}
+    original = normalize_newlines(text)
+    return {"original": original, "cleaned": clean_for_speech(original), "mode": "deterministic"}
 
 
 @app.post("/api/audiobook/llm-propose")
@@ -381,14 +383,16 @@ async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = F
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
     try:
+        original = normalize_newlines(text)
         proposal = propose_with_llm(
-            text,
+            original,
             instruction.strip() or None,
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             api_key=settings.llm_api_key,
         )
-        return {"original": text, "proposed": proposal, "changes": make_diff(text, proposal), "segments": make_diff_segments(text, proposal), "mode": "llm", "accepted": False}
+        proposal = normalize_newlines(proposal)
+        return {"original": original, "proposed": proposal, "changes": make_diff(original, proposal), "segments": make_diff_segments(original, proposal), "mode": "llm", "accepted": False}
     except RuntimeError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=503)
 
@@ -397,8 +401,9 @@ async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = F
 async def cleanup_preview_audiobook_text(text: str = Form(...)):
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
-    cleaned = clean_for_speech(text)
-    return {"original": text, "proposed": cleaned, "changes": make_diff(text, cleaned), "segments": make_diff_segments(text, cleaned), "mode": "deterministic"}
+    original = normalize_newlines(text)
+    cleaned = clean_for_speech(original)
+    return {"original": original, "proposed": cleaned, "changes": make_diff(original, cleaned), "segments": make_diff_segments(original, cleaned), "mode": "deterministic"}
 
 
 @app.post("/api/audiobook/apply-diff")
@@ -407,7 +412,7 @@ async def apply_audiobook_diff(original: str = Form(...), proposed: str = Form(.
         ids = json.loads(accepted_ids)
         if not isinstance(ids, list) or not all(isinstance(item, int) for item in ids):
             raise ValueError("accepted_ids must be a JSON array of integers")
-        return {"text": apply_diff(original, proposed, set(ids))}
+        return {"text": apply_diff(normalize_newlines(original), normalize_newlines(proposed), set(ids))}
     except (ValueError, json.JSONDecodeError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 

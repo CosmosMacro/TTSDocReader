@@ -31,6 +31,11 @@ class Settings:
     # - PARLER_MODEL: HF model id (e.g., "parler-tts/parler-tts-mini-v1")
     parler_model: str = os.getenv("PARLER_MODEL", "parler-tts/parler-tts-mini-v1")
 
+    # Optional local/OpenAI-compatible LLM used only for review proposals.
+    llm_base_url: str = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+    llm_model: str = os.getenv("LLM_MODEL", "local-model")
+    llm_api_key: str = os.getenv("LLM_API_KEY", "")
+
 
 settings = Settings()
 

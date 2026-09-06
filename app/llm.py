@@ -13,12 +13,19 @@ DEFAULT_INSTRUCTION = (
 )
 
 
-def propose_with_llm(text: str, instruction: str | None = None) -> str:
+def propose_with_llm(
+    text: str,
+    instruction: str | None = None,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+) -> str:
     """Ask a local/OpenAI-compatible chat endpoint for a reviewable proposal."""
     instruction = instruction or DEFAULT_INSTRUCTION
-    base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/")
-    model = os.getenv("LLM_MODEL", "local-model")
-    api_key = os.getenv("LLM_API_KEY", "")
+    base_url = (base_url or os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")).rstrip("/")
+    model = model or os.getenv("LLM_MODEL", "local-model")
+    api_key = api_key if api_key is not None else os.getenv("LLM_API_KEY", "")
     payload = {
         "model": model,
         "temperature": 0.1,

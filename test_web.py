@@ -27,7 +27,11 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertIn("Sauvegarder le manifeste", response.text)
         self.assertIn("Nettoyer automatiquement", response.text)
         self.assertIn("Proposer avec IA", response.text)
-        self.assertIn("Accepter cette proposition", response.text)
+        self.assertIn("Appliquer la sélection", response.text)
+        self.assertIn("Tout accepter", response.text)
+        self.assertIn("Tout refuser", response.text)
+        self.assertIn("Paramètres LLM", response.text)
+        self.assertIn("Plein écran", response.text)
 
     def test_audiobook_javascript_is_valid(self):
         script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -49,6 +53,22 @@ class AudiobookWebTests(unittest.TestCase):
         self.assertEqual(response.json()["proposed"], "Texte proposé")
         self.assertFalse(response.json()["accepted"])
         proposer.assert_called_once()
+
+    def test_cleanup_preview_and_partial_diff_application(self):
+        original = "Un mot coup-\n\né.\n\n12\n\nSuite."
+        preview = self.client.post("/api/audiobook/cleanup-preview", data={"text": original})
+        self.assertEqual(preview.status_code, 200)
+        data = preview.json()
+        self.assertTrue(data["changes"])
+        applied = self.client.post("/api/audiobook/apply-diff", data={"original": original, "proposed": data["proposed"], "accepted_ids": "[]"})
+        self.assertEqual(applied.json()["text"], original)
+
+    def test_llm_settings_do_not_return_the_secret(self):
+        with patch.object(settings, "llm_api_key", "secret-value"):
+            response = self.client.get("/api/settings/llm")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["api_key_configured"])
+        self.assertNotIn("secret-value", response.text)
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")

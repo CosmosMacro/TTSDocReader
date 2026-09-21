@@ -19,6 +19,16 @@ class Chapter:
     index: int = 0
 
 
+@dataclass(frozen=True)
+class ChapterReview:
+    """Heuristic review metadata used before an expensive conversion."""
+
+    kind: str
+    confidence: float
+    selected: bool
+    group: str
+
+
 @dataclass
 class Book:
     title: str
@@ -29,6 +39,31 @@ class Book:
     @property
     def text(self) -> str:
         return "\n\n".join(c.text for c in self.chapters if c.text)
+
+
+class _NavigationParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "a":
+            self._href = dict(attrs).get("href")
+            self._text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._href:
+            label = normalize_text(" ".join("".join(self._text).split()))
+            if label:
+                self.links.append((self._href, label))
+            self._href = None
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href:
+            self._text.append(data)
 
 
 class _XhtmlText(HTMLParser):
@@ -99,6 +134,57 @@ def _resolve_zip_path(base: str, href: str) -> str:
     return posixpath.normpath(posixpath.join(posixpath.dirname(base), href))
 
 
+def _navigation_entries(archive: ZipFile, opf_path: str, items: dict[str, tuple[str, str]]) -> tuple[dict[str, list[tuple[str | None, str]]], set[str]]:
+    """Return content-path -> ordered (fragment, title) entries from EPUB navigation."""
+    from urllib.parse import unquote
+
+    entries: dict[str, list[tuple[str | None, str]]] = {}
+    nav_paths: set[str] = set()
+
+    def add_entry(base: str, target: str, label: str) -> None:
+        target_path, _, fragment = target.partition("#")
+        path = _resolve_zip_path(base, target_path)
+        entries.setdefault(path, []).append((unquote(fragment) or None, label))
+
+    for item_id, (href, properties) in items.items():
+        if "nav" in properties.split():
+            nav_paths.add(href)
+            try:
+                parser = _NavigationParser()
+                parser.feed(archive.read(href).decode("utf-8", errors="replace"))
+                for target, label in parser.links:
+                    add_entry(href, target, label)
+            except (KeyError, ValueError):
+                pass
+    for item_id, (href, media_type) in items.items():
+        if media_type != "application/x-dtbncx+xml" or href not in archive.namelist():
+            continue
+        try:
+            root = ET.fromstring(archive.read(href))
+            for point in root.iter():
+                if _local(point.tag) != "navPoint":
+                    continue
+                label = next((normalize_text(x.text or "") for x in point.iter() if _local(x.tag) == "text" and x.text), "")
+                content = next((x.attrib.get("src") for x in point.iter() if _local(x.tag) == "content" and x.attrib.get("src")), None)
+                if label and content:
+                    add_entry(href, content, label)
+        except (ET.ParseError, KeyError):
+            pass
+    return entries, nav_paths
+
+
+def _best_navigation_title(entries: list[tuple[str | None, str]]) -> str | None:
+    """Choose a meaningful file-level title, ignoring page-number anchors."""
+    for _fragment, title in entries:
+        clean = normalize_text(title)
+        if not clean or re.fullmatch(r"\d+", clean):
+            continue
+        if clean.casefold() in {"références", "references"}:
+            continue
+        return clean
+    return None
+
+
 def _parse_epub(path: Path) -> Book:
     with ZipFile(path) as archive:
         container = ET.fromstring(archive.read("META-INF/container.xml"))
@@ -109,22 +195,29 @@ def _parse_epub(path: Path) -> Book:
         opf = ET.fromstring(archive.read(opf_path))
 
         manifest: dict[str, str] = {}
+        item_meta: dict[str, tuple[str, str]] = {}
         for item in opf.iter():
             if _local(item.tag) == "item" and item.attrib.get("id") and item.attrib.get("href"):
-                manifest[item.attrib["id"]] = _resolve_zip_path(opf_path, item.attrib["href"])
+                item_id = item.attrib["id"]
+                href = _resolve_zip_path(opf_path, item.attrib["href"])
+                manifest[item_id] = href
+                item_meta[item_id] = (href, item.attrib.get("properties", "") or item.attrib.get("media-type", ""))
 
         spine_ids = [item.attrib.get("idref") for item in opf.iter() if _local(item.tag) == "itemref"]
+        navigation_entries, navigation_paths = _navigation_entries(archive, opf_path, item_meta)
         chapters: list[Chapter] = []
         for source_index, item_id in enumerate(spine_ids):
             href = manifest.get(item_id or "")
-            if not href or href not in archive.namelist():
+            if not href or href in navigation_paths or href not in archive.namelist():
                 continue
+            raw = archive.read(href).decode("utf-8", errors="replace")
             parser = _XhtmlText()
-            parser.feed(archive.read(href).decode("utf-8", errors="replace"))
+            parser.feed(raw)
             text = parser.text
             if not text:
                 continue
-            title = parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}"
+            entries = navigation_entries.get(href, [])
+            title = _best_navigation_title(entries) or (parser.headings[0] if parser.headings else f"Chapitre {len(chapters) + 1}")
             chapters.append(Chapter(title=title, text=text, index=len(chapters) + 1))
 
         if not chapters:
@@ -162,6 +255,74 @@ def split_text_into_chapters(text: str) -> list[Chapter]:
     return chapters
 
 
+def _normalized_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9àâçéèêëîïôùûüÿœæ ]", " ", title.casefold())
+
+
+def classify_chapter(chapter: Chapter) -> ChapterReview:
+    """Classify an item conservatively; uncertain items require human review."""
+    title = _normalized_title(chapter.title)
+    text = normalize_text(chapter.text)
+    words = len(text.split())
+    compact = re.sub(r"\s+", " ", text).casefold()
+    if any(term in title for term in ("table des matières", "table of contents", "sommaire", "contents")):
+        return ChapterReview("toc", 0.99, False, "Éléments préliminaires")
+    if any(term in title for term in ("copyright", "page de titre", "title page", "couverture", "cover")):
+        return ChapterReview("front_matter", 0.97, False, "Éléments préliminaires")
+    if any(term in title for term in ("références", "references", "bibliographie", "bibliography", "index")):
+        return ChapterReview("references", 0.95, False, "Éléments optionnels")
+    if any(term in title for term in ("glossaire", "glossary")):
+        return ChapterReview("glossary", 0.95, False, "Éléments optionnels")
+    if any(term in title for term in ("annexe", "appendix")):
+        return ChapterReview("appendix", 0.9, False, "Éléments optionnels")
+    if re.search(r"\b(préface|preface|avant propos|remerciements|acknowledg|liste des auteurs|about the author)\b", title):
+        return ChapterReview("front_matter", 0.9, False, "Éléments préliminaires")
+    if re.fullmatch(r"(?:chapitre|chapter|section|partie|part)\s+\d+", title) and words < 40:
+        return ChapterReview("unknown", 0.45, False, "À vérifier")
+    if re.search(r"\b(chapitre|chapter)\s+\d+\b", title):
+        return ChapterReview("chapter", 0.94 if words >= 40 else 0.7, True, "Contenu principal")
+    if re.search(r"\b(partie|part)\s+\w+", title):
+        return ChapterReview("part", 0.88, True, "Contenu principal")
+    if words < 40 or len(compact) < 160:
+        return ChapterReview("unknown", 0.4, False, "À vérifier")
+    return ChapterReview("chapter", 0.65, True, "Contenu principal")
+
+
+def apply_chapter_selection(book: Book, selected: Iterable[bool]) -> Book:
+    """Keep selected chapters and reindex them for audiobook output."""
+    flags = list(selected)
+    if len(flags) != len(book.chapters):
+        raise ValueError(f"Expected {len(book.chapters)} chapter selections, got {len(flags)}")
+    chapters: list[Chapter] = []
+    for chapter, keep in zip(book.chapters, flags):
+        if keep:
+            chapters.append(Chapter(chapter.title, chapter.text, len(chapters) + 1))
+    if not chapters:
+        raise ValueError("At least one chapter must be selected")
+    return Book(book.title, book.author, book.source, chapters)
+
+
+def apply_structure(book: Book, entries: Iterable[dict]) -> Book:
+    """Build a book from a reviewed structure manifest."""
+    chapters: list[Chapter] = []
+    raw_entries = list(entries)
+    if not raw_entries:
+        raise ValueError("Structure manifest contains no units")
+    for entry in raw_entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("title"), str) or not isinstance(entry.get("text"), str):
+            raise ValueError("Each structure unit needs string title and text")
+        if not isinstance(entry.get("selected", True), bool):
+            raise ValueError("Each structure unit needs a boolean selected flag")
+        chapters.append(Chapter(entry["title"].strip() or "Unité sans titre", entry["text"], len(chapters) + 1))
+    selected_chapters: list[Chapter] = []
+    for chapter, entry in zip(chapters, raw_entries):
+        if entry.get("selected", True):
+            selected_chapters.append(Chapter(chapter.title, chapter.text, len(selected_chapters) + 1))
+    if not selected_chapters:
+        raise ValueError("At least one structure unit must be selected")
+    return Book(book.title, book.author, book.source, selected_chapters)
+
+
 def apply_chapter_titles(book: Book, titles: Iterable[str]) -> Book:
     """Return a copy with user-corrected titles while preserving chapter text."""
     corrected = list(titles)
@@ -178,10 +339,12 @@ def load_book(path: str | Path) -> Book:
     source = Path(path)
     if source.suffix.lower() == ".epub":
         return _parse_epub(source)
-    if source.suffix.lower() == ".pdf":
+    if source.suffix.lower() in {".pdf", ".docx", ".txt", ".md"}:
         text = extract_text(source)
-        return Book(source.stem, None, source, split_text_into_chapters(text))
-    if source.suffix.lower() in {".txt", ".md"}:
-        text = extract_text(source)
+        if not text.strip():
+            raise ValueError(
+                "Aucun texte exploitable n'a été trouvé. Si ce document est un PDF numérisé, "
+                "effectuez d'abord un OCR puis réimportez-le."
+            )
         return Book(source.stem, None, source, split_text_into_chapters(text))
     raise ValueError(f"Unsupported book extension: {source.suffix}")

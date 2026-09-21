@@ -9,3 +9,5 @@ regex>=2024.5.15
 tqdm>=4.66
 pyttsx3>=2.90
 python-multipart>=0.0.9
+httpx>=0.28
+playwright>=1.62

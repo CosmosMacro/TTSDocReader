@@ -8,15 +8,24 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .audiobook import build_audiobook
-from .books import apply_chapter_titles, load_book
-from .config import settings
+from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
+from .config import migrate_legacy_llm_settings, repair_llm_base_url, save_local_llm_settings, settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
+from .llm import CONSERVATIVE_MODE, INSTRUCTIONS_BY_MODE, LLMError, list_models, propose_with_llm, test_connection, validate_base_url
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
+from .text_diff import apply_diff, make_diff, make_diff_segments
+from .text_prepare import clean_for_speech, normalize_newlines
+from .project_api import router as project_router
 
 app = FastAPI(title="TTSDocReader")
+app.include_router(project_router)
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR, check_dir=False), name="static")
 
 INDEX_HTML = f"""
 <!doctype html>
@@ -307,7 +316,8 @@ INDEX_HTML = f"""
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return AUDIOBOOK_HTML
+    html = (STATIC_DIR / "workspace.html").read_text(encoding="utf-8")
+    return html.replace("/static/workspace.js", "/static/workspace.js?v=oral-adaptation-2")
 
 
 @app.get("/tts", response_class=HTMLResponse)
@@ -317,21 +327,68 @@ async def legacy_tts_page():
 
 AUDIOBOOK_HTML = """
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTSDocReader Audiobook</title>
-<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.5rem .5rem .5rem 0}.chapter{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}.chapter span{min-width:2rem}.chapter input{flex:1}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
-<body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie les chapitres, puis génère les MP3 et le M4B.</p>
-<section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><div id="summary"></div></section>
-<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><h2>Chapitres détectés</h2><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
+<style>body{font-family:system-ui,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;color:#182033}section{border:1px solid #d8dce8;border-radius:12px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.7rem 0 .25rem}input,button,textarea{font:inherit;padding:.55rem;border-radius:8px;border:1px solid #bbc2d2}input[type=text]{width:100%;box-sizing:border-box}button{cursor:pointer;background:#6759ff;color:white;border:0;margin:.35rem .35rem .35rem 0}.chapter{display:grid;grid-template-columns:auto 1fr auto;gap:.5rem;align-items:center;margin:.4rem 0;padding:.45rem;border-radius:8px}.chapter.low{background:#fff4d6}.chapter small{color:#667085}.chapter textarea{width:100%;min-height:14rem;resize:vertical;box-sizing:border-box}.group{margin:1rem 0}.group h3{margin:.5rem 0}.tools{white-space:nowrap}.preview{grid-column:2/-1;background:#f7f8fc;padding:.6rem;white-space:pre-wrap;max-height:30rem;overflow:auto}.preview[open]{min-height:30rem}.editor-toolbar{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;background:#f7f8fc;padding:.4rem 0}.editor-body{box-sizing:border-box;width:100%;height:24rem;min-height:24rem}.editor-body .edit-text{box-sizing:border-box;width:100%;height:100%;min-height:100%}.chapter.editor-fullscreen{box-sizing:border-box;position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:1.25rem;z-index:10000;background:#fff;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto minmax(0,1fr);gap:.75rem;align-items:stretch;overflow:hidden}.chapter.editor-fullscreen>.pick{display:none}.chapter.editor-fullscreen>.title{grid-column:1;grid-row:1;width:100%;box-sizing:border-box}.chapter.editor-fullscreen>small{grid-column:2;grid-row:1;align-self:center}.chapter.editor-fullscreen>.tools{grid-column:1/-1;grid-row:2;white-space:normal}.chapter.editor-fullscreen .preview[open]{box-sizing:border-box;grid-column:1/-1;grid-row:3;width:100%;height:100%;min-height:0;max-height:none;display:grid;grid-template-rows:auto auto minmax(0,1fr);overflow:hidden}.chapter.editor-fullscreen .editor-toolbar{position:static}.chapter.editor-fullscreen .editor-body{min-height:0;height:auto;width:100%;display:grid;grid-template-rows:minmax(0,1fr) auto;overflow:hidden}.chapter.editor-fullscreen .edit-text{height:100%;min-height:0;width:100%;resize:none;box-sizing:border-box}.chapter.editor-fullscreen .inline-diff{min-height:0;height:100%}.inline-diff{box-sizing:border-box;width:100%;height:100%;overflow:auto;white-space:pre-wrap;line-height:1.65;padding:1rem;background:#fff;border:1px solid #bbc2d2;border-radius:8px}.diff-unit{display:inline}.diff-unit input{width:1rem;height:1rem;vertical-align:middle;margin:0 .2rem}.diff-unit ins{background:#d9fbe3;color:#126b32;text-decoration:underline;text-decoration-thickness:2px}.diff-unit del{background:#ffe0e0;color:#9b1c1c;text-decoration:line-through;text-decoration-thickness:2px}.review-actions{position:sticky;bottom:0;background:#fff;padding:.5rem;border-top:1px solid #d8dce8}.diff{margin:.75rem 0;padding:.6rem;background:#fff;border:1px solid #d8dce8}.diff-row{display:grid;grid-template-columns:auto 1fr;gap:.5rem;padding:.25rem}.diff-add{background:#d9fbe3;color:#126b32}.diff-remove{text-decoration:line-through;background:#ffe0e0;color:#9b1c1c}.diff-change{border-left:3px solid #d97706;padding-left:.5rem}.llm-settings{padding:1rem;border:1px solid #bbc2d2;border-radius:10px}.muted{color:#667085}.error{color:#b42318;font-weight:600}</style></head>
+<body><h1>TTSDocReader — Audiobook</h1><p class="muted">Importe un EPUB ou un PDF textuel, vérifie rapidement la structure, puis génère les MP3 et le M4B.</p>
+<section><label>Document</label><input id="file" type="file" accept=".epub,.pdf" required><button id="inspect">Analyser le document</button><label>Manifeste existant (optionnel)</label><input id="manifestFile" type="file" accept=".structure.json,.json"><button id="loadManifest" type="button">Charger le manifeste</button><div id="summary"></div></section>
+<section id="settings" hidden><label>Modèle Fish Audio</label><input id="model" type="text" value="s2.1-pro-free"><label>Identifiant de voix Fish Audio (optionnel)</label><input id="voice" type="text"><div><button id="mainOnly" type="button">Contenu principal uniquement</button><button id="allNarrative" type="button">Inclure les éléments optionnels</button><button id="saveManifest" type="button">Sauvegarder le manifeste</button><button id="llmSettingsBtn" type="button">Paramètres LLM</button></div><h2>Revue de structure</h2><p class="muted">Aperçu, déplacement, fusion et séparation sont réversibles tant que tu n’as pas généré l’audiobook.</p><div id="chapters"></div><label><input id="consent" type="checkbox"> J’accepte que le texte soit envoyé à Fish Audio pour cette conversion.</label><button id="generate">Générer les MP3 et le M4B</button><p id="status" class="muted"></p></section>
+<dialog id="llmDialog"><form method="dialog" class="llm-settings"><h2>Paramètres LLM</h2><label>URL du serveur compatible OpenAI</label><input id="llmBaseUrl" type="text" value="http://127.0.0.1:1234/v1"><label>Modèle</label><input id="llmModel" type="text" value="local-model"><label>Clé API (optionnelle, laissée vide pour conserver la clé actuelle)</label><input id="llmKey" type="password"><p class="muted">La clé est transmise uniquement au serveur local de TTSDocReader.</p><button id="llmSave" type="button">Enregistrer</button><button id="llmClose" type="button">Fermer</button><p id="llmStatus" class="muted"></p></form></dialog>
+<style>.chapter.editor-fullscreen .preview[open]{grid-template-rows:auto minmax(0,1fr)}.chapter.editor-fullscreen .preview::details-content{display:grid;grid-template-rows:auto minmax(0,1fr);height:100%;min-height:0}.chapter.editor-fullscreen .editor-body{height:100%;grid-template-rows:minmax(0,1fr)}</style>
 <script>
-const $=id=>document.getElementById(id); let current=null;
-$('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+d.title+'</b> — '+d.chapters.length+' chapitre(s). Coût estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';$('chapters').innerHTML=d.chapters.map(c=>'<div class="chapter"><span>'+c.index+'</span><input type="text" value="'+c.title.replaceAll('&','&amp;').replaceAll('"','&quot;')+'"></div>').join('');$('settings').hidden=false;};
-$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}const f=$('file').files[0];const titles=[...$('chapters').querySelectorAll('input')].map(x=>x.value);const fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('titles_json',JSON.stringify(titles));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
+const $=id=>document.getElementById(id);let current=null;let fullscreenIndex=null;const normalizeNewlines=s=>String(s).replaceAll('\\r\\n','\\n').replaceAll('\\r','\\n');
+const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`),e=document.querySelector(`.edit-text[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;if(e)c.text=normalizeNewlines(e.value);if(c.review)c.review.changes.forEach(ch=>{const box=document.querySelector(`.diff-pick[data-unit="${i}"][data-id="${ch.id}"]`);if(box)ch.accepted=box.checked;});});}
+function visibleWhitespace(s){return esc(s).replaceAll(' ','·').replaceAll(String.fromCharCode(9),'⇥').replaceAll(String.fromCharCode(10),'↵<br>');}
+function changedText(s){return s.trim()?esc(s):visibleWhitespace(s);}
+function reviewHtml(c,i){if(!c.review)return '';const segments=c.review.segments||[];const flow=segments.map(seg=>{if(seg.kind==='equal')return `<span>${esc(seg.original)}</span>`;const change=c.review.changes.find(ch=>ch.id===seg.id),checked=change&&change.accepted?'checked':'';const pick=`<input class="diff-pick" data-unit="${i}" data-id="${seg.id}" type="checkbox" ${checked} title="Inclure cette modification">`;if(seg.kind==='insert')return `<label class="diff-unit">${pick}<ins>${changedText(seg.proposed)}</ins></label>`;if(seg.kind==='delete')return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del></label>`;return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del><ins>${changedText(seg.proposed)}</ins></label>`;}).join('');if(!c.review.changes.length)return `<div class="inline-diff">${esc(c.review.original)}</div><div class="review-actions"><b>Aucune modification détectée.</b><button type="button" data-action="cancel-review" data-i="${i}">Fermer</button></div>`;return `<div class="inline-diff">${flow}</div><div class="review-actions"><b>${c.review.mode==='llm'?'Adaptation à l’oral':'Nettoyage automatique'} :</b><button type="button" data-action="all-review" data-i="${i}">Tout accepter</button><button type="button" data-action="none-review" data-i="${i}">Tout refuser</button><button type="button" data-action="apply-review" data-i="${i}">Appliquer la sélection</button><button type="button" data-action="cancel-review" data-i="${i}">Annuler</button></div>`;}
+function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''} ${c.i===fullscreenIndex?'editor-fullscreen':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button><button type="button" data-action="fullscreen" data-i="${c.i}">${c.i===fullscreenIndex?'Quitter le plein écran':'Plein écran'}</button></div><details class="preview" ${c.i===fullscreenIndex?'open':''}><summary>Aperçu du texte / Modifier le texte</summary><div class="editor-toolbar"><button type="button" data-action="clean" data-i="${c.i}">Nettoyer automatiquement</button><button type="button" data-action="llm" data-i="${c.i}">Adapter à l’oral</button>${c.error?`<span class="error">${esc(c.error)}</span>`:''}</div><div class="editor-body">${c.review?reviewHtml(c,c.i):`<textarea class="edit-text" data-i="${c.i}">${esc(c.text)}</textarea>`}</div></details></div>`).join('')}</div>`).join('');}
+function addCopyButtons(){document.querySelectorAll('.review-actions').forEach(a=>{if(a.querySelector('[data-action="copy-review"]'))return;const b=document.createElement('button');b.type='button';b.dataset.action='copy-review';b.dataset.i=a.closest('.chapter')?.querySelector('.diff-pick')?.dataset.unit||'';b.textContent='Copier la proposition';a.insertBefore(b,a.querySelector('[data-action="apply-review"]'));});}
+function setSelection(predicate){syncDom();current.chapters.forEach(c=>c.selected=predicate(c));render();}
+function structure(){syncDom();return current.chapters.map(c=>({title:c.title,text:c.text,selected:!!c.selected,kind:c.kind,group:c.group,confidence:c.confidence}));}
+function move(i,delta){syncDom();const j=i+delta;if(j<0||j>=current.chapters.length)return;[current.chapters[i],current.chapters[j]]=[current.chapters[j],current.chapters[i]];render();}
+function merge(i){syncDom();if(i>=current.chapters.length-1)return;const a=current.chapters[i],b=current.chapters[i+1];a.title=a.title+' / '+b.title;a.text=a.text+'\\n\\n'+b.text;a.selected=a.selected||b.selected;a.confidence=Math.min(a.confidence,b.confidence);current.chapters.splice(i+1,1);render();}
+function split(i){syncDom();const c=current.chapters[i],at=prompt('Texte qui commence la seconde unité (copie une phrase ou un titre)');if(!at)return;const pos=c.text.indexOf(at);if(pos<=0){alert('Marqueur introuvable ou placé au début.');return;}const first=c.text.slice(0,pos).trim(),second=c.text.slice(pos).trim();if(!first||!second)return;c.text=first;current.chapters.splice(i+1,0,{...c,title:c.title+' (suite)',text:second,confidence:Math.min(c.confidence,.6)});render();}
+$('chapters').onclick=async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action,c=current.chapters[i];if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);if(a==='fullscreen'){syncDom();fullscreenIndex=fullscreenIndex===i?null:i;render();return;}if(a==='all-review'||a==='none-review'){syncDom();c.review.changes.forEach(ch=>ch.accepted=a==='all-review');render();}if(a==='cancel-review'){syncDom();c.text=c.review.original;delete c.review;render();$('status').textContent='Proposition annulée.';}if(a==='apply-review'){syncDom();const accepted=c.review.changes.filter(ch=>ch.accepted).map(ch=>ch.id);const allAccepted=accepted.length===c.review.changes.length;if(allAccepted){c.text=c.review.proposed;delete c.review;render();$('status').textContent='Toutes les modifications ont été appliquées.';return;}const fd=new FormData();fd.append('original',c.review.original);fd.append('proposed',c.review.proposed);fd.append('accepted_ids',JSON.stringify(accepted));const r=await fetch('/api/audiobook/apply-diff',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}c.text=d.text;delete c.review;render();$('status').textContent='Modifications appliquées.';}if(a==='clean'||a==='llm'){syncDom();const fd=new FormData();fd.append('text',c.text);if(a==='llm')fd.append('mode','oral');$('status').textContent=a==='clean'?'Préparation du diff…':'Adaptation à l’oral en cours…';const r=await fetch(a==='clean'?'/api/audiobook/cleanup-preview':'/api/audiobook/llm-propose',{method:'POST',body:fd}),d=await r.json();if(!r.ok){c.error=d.detail||`Erreur HTTP ${r.status}`;render();$('status').textContent=c.error;return;}delete c.error;c.review={original:d.original,proposed:d.proposed,changes:d.changes,segments:d.segments||[],mode:d.mode};render();$('status').textContent=a==='clean'?'Diff affiché dans le corps du texte : vérifie puis applique ou annule.':'Adaptation proposée : accepte ou refuse chaque changement.';}};
+$('llmSettingsBtn').onclick=async()=>{const r=await fetch('/api/settings/llm'),d=await r.json();$('llmBaseUrl').value=d.base_url;$('llmModel').value=d.model;$('llmKey').value='';$('llmStatus').textContent=d.api_key_configured?'Clé configurée localement.':'Aucune clé configurée.';$('llmDialog').showModal();};
+$('llmClose').onclick=()=>$('llmDialog').close();
+new MutationObserver(addCopyButtons).observe($('chapters'),{childList:true,subtree:true});$('chapters').addEventListener('click',async e=>{const b=e.target.closest('[data-action="copy-review"]');if(!b)return;const c=current.chapters[Number(b.dataset.i)];if(!c?.review)return;try{await navigator.clipboard.writeText(c.review.proposed);$('status').textContent='Proposition copiée sans les marques du diff.';}catch(_){$('status').textContent='Copie impossible : utilise Appliquer la sélection.';}});
+const llmModels=document.createElement('datalist');llmModels.id='llmModels';$('llmModel').setAttribute('list','llmModels');$('llmModel').after(llmModels);
+const llmProvider=document.createElement('select');llmProvider.id='llmProvider';[['groq','Groq'],['local','Local compatible OpenAI'],['custom','Personnalisé']].forEach(([value,label])=>{const o=document.createElement('option');o.value=value;o.textContent=label;llmProvider.append(o);});const providerLabel=document.createElement('label');providerLabel.textContent='Fournisseur';providerLabel.append(llmProvider);$('llmBaseUrl').before(providerLabel);llmProvider.onchange=()=>{if(llmProvider.value==='groq'){$('llmBaseUrl').value='https://api.groq.com/openai/v1';if($('llmModel').value==='local-model')$('llmModel').value='llama-3.3-70b-versatile';}if(llmProvider.value==='local')$('llmBaseUrl').value='http://127.0.0.1:1234/v1';};
+const llmTest=document.createElement('button');llmTest.type='button';llmTest.id='llmTest';llmTest.textContent='Tester la connexion';$('llmStatus').before(llmTest);
+const llmModelsBtn=document.createElement('button');llmModelsBtn.type='button';llmModelsBtn.id='llmModelsBtn';llmModelsBtn.textContent='Charger les modèles';$('llmStatus').before(llmModelsBtn);
+llmTest.onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('model',$('llmModel').value);fd.append('api_key',$('llmKey').value);$('llmStatus').textContent='Test de connexion en cours…';const r=await fetch('/api/settings/llm/test',{method:'POST',body:fd}),d=await r.json();$('llmStatus').textContent=r.ok?(d.model_available?'Connexion Groq réussie. Modèle disponible : '+d.model+'.':'Connexion réussie, mais le modèle configuré n’est pas disponible.'):(d.detail||'Échec du test de connexion.');};
+llmModelsBtn.onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('api_key',$('llmKey').value);$('llmStatus').textContent='Chargement des modèles…';const r=await fetch('/api/settings/llm/models',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('llmStatus').textContent=d.detail||'Erreur';return;}llmModels.innerHTML=d.models.map(m=>`<option value="${esc(m)}">`).join('');$('llmStatus').textContent=d.models.length+' modèle(s) disponible(s).';};
+$('llmSave').onclick=async()=>{const fd=new FormData();fd.append('base_url',$('llmBaseUrl').value);fd.append('model',$('llmModel').value);fd.append('api_key',$('llmKey').value);const r=await fetch('/api/settings/llm',{method:'POST',body:fd}),d=await r.json();$('llmStatus').textContent=r.ok?'Paramètres enregistrés.':(d.detail||'Erreur');if(r.ok)setTimeout(()=>$('llmDialog').close(),500);};
+ $('loadManifest').onclick=()=>{const f=$('manifestFile').files[0];if(!f)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(!Array.isArray(d.units)||!d.units.length)throw new Error('Le manifeste ne contient aucune unité.');current={title:d.title||'Document',author:d.author||null,estimated_cost_usd:0,chapters:d.units.map((c,i)=>({...c,index:i+1,kind:c.kind||'unknown',group:c.group||'À vérifier',confidence:Number(c.confidence||.5),selected:Boolean(c.selected)}))};$('summary').innerHTML='<p><b>'+esc(current.title)+'</b> — manifeste chargé. Sélection : '+current.chapters.filter(c=>c.selected).length+'/'+current.chapters.length+'</p>';render();$('settings').hidden=false;}catch(e){$('summary').innerHTML='<p class="error">'+esc(e.message||'Manifeste invalide')+'</p>';}};reader.readAsText(f);};
+$('inspect').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);const r=await fetch('/api/audiobook/inspect',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('summary').innerHTML='<p class="error">'+esc(d.detail||'Erreur')+'</p>';return;}current=d;$('summary').innerHTML='<p><b>'+esc(d.title)+'</b> — '+d.chapters.length+' unité(s). Sélection proposée: '+d.chapters.filter(c=>c.selected).length+' · Coût total estimé: $'+d.estimated_cost_usd.toFixed(4)+'</p>';render();$('settings').hidden=false;};
+$('mainOnly').onclick=()=>setSelection(c=>c.group==='Contenu principal');$('allNarrative').onclick=()=>setSelection(c=>c.kind!=='toc'&&c.kind!=='front_matter');
+$('saveManifest').onclick=async()=>{const f=$('file').files[0];if(!f)return;const fd=new FormData();fd.append('file',f);fd.append('structure_json',JSON.stringify(structure()));$('status').textContent='Sauvegarde du manifeste…';const r=await fetch('/api/audiobook/manifest',{method:'POST',body:fd});const d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}const blob=new Blob([JSON.stringify(d.manifest,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name.replace(/[.][^.]+$/,'')+'.structure.json';a.click();$('status').textContent='Manifeste sauvegardé : '+d.path;};
+$('generate').onclick=async()=>{if(!$('consent').checked){$('status').textContent='Coche le consentement avant de lancer la conversion.';return;}const f=$('file').files[0],fd=new FormData();fd.append('file',f);fd.append('model',$('model').value);fd.append('voice',$('voice').value);fd.append('structure_json',JSON.stringify(structure()));fd.append('confirm_egress','true');$('generate').disabled=true;$('status').textContent='Conversion en cours…';const r=await fetch('/api/audiobook/synthesize',{method:'POST',body:fd});if(!r.ok){const d=await r.json();$('status').textContent=d.detail||'Erreur';$('generate').disabled=false;return;}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='audiobook-output.zip';a.click();$('status').textContent='Terminé — archive téléchargée.';$('generate').disabled=false;};
 </script></body></html>
 """
 
 
 @app.get("/audiobook", response_class=HTMLResponse)
 async def audiobook_page():
-    return AUDIOBOOK_HTML
+    return await index()
+
+
+@app.get("/audiobook/legacy", response_class=HTMLResponse)
+async def legacy_audiobook_page():
+    html = AUDIOBOOK_HTML.replace("Proposer avec IA", "Adapter à l’oral")
+    html = html.replace("Proposition IA", "Adaptation à l’oral")
+    html = html.replace("fd.append('text',c.text);$('status').textContent", "fd.append('text',c.text);if(a==='llm')fd.append('mode','oral');$('status').textContent")
+    loading_feedback = """
+<style>
+#status.is-loading{display:flex;align-items:center;gap:.55rem}
+#status.is-loading::before{content:"";width:1rem;height:1rem;border:2px solid #d8d4f7;border-top-color:#6759ff;border-radius:50%;flex:none;animation:status-spin .8s linear infinite}
+@keyframes status-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#status.is-loading::before{animation:none;border-top-color:#6759ff}}
+</style>
+<script>
+(()=>{const status=document.getElementById('status');if(!status)return;status.setAttribute('role','status');status.setAttribute('aria-live','polite');const update=()=>{const busy=/(en cours|en attente|vérification|préparation)/i.test(status.textContent||'');status.classList.toggle('is-loading',busy);status.setAttribute('aria-busy',String(busy));};new MutationObserver(update).observe(status,{childList:true,characterData:true,subtree:true});update();})();
+</script>
+"""
+    return html.replace("</body>", loading_feedback + "</body>")
 
 
 @app.post("/api/audiobook/inspect")
@@ -341,8 +398,151 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
     path.write_bytes(await file.read())
     try:
         book = load_book(path)
-        return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text} for c in book.chapters]}
+        reviews = [classify_chapter(c) for c in book.chapters]
+        return {"title": book.title, "author": book.author, "estimated_cost_usd": estimate_cost_usd(book.text, model), "chapters": [{"index": c.index, "title": c.title, "text": c.text, "kind": r.kind, "confidence": r.confidence, "selected": r.selected, "group": r.group} for c, r in zip(book.chapters, reviews)]}
     except (ValueError, RuntimeError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.post("/api/audiobook/cleanup")
+def cleanup_audiobook_text(text: str = Form(...)):
+    if not text.strip():
+        return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    original = normalize_newlines(text)
+    return {"original": original, "cleaned": clean_for_speech(original), "mode": "deterministic"}
+
+
+@app.post("/api/audiobook/estimate")
+async def estimate_audiobook(payload: dict):
+    text = payload.get("text", "")
+    model = payload.get("model", "")
+    if not isinstance(text, str) or not isinstance(model, str) or not model.strip():
+        return JSONResponse({"detail": "Texte et modèle valides requis."}, status_code=400)
+    return {
+        "estimated_cost_usd": estimate_cost_usd(text, model),
+        "estimated": True,
+        "warning": "Estimation indicative selon le barème local ; vérifiez le tarif du fournisseur.",
+    }
+
+
+@app.post("/api/audiobook/llm-propose")
+async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = Form(""), mode: str = Form(CONSERVATIVE_MODE)):
+    if not text.strip():
+        return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    mode = mode.strip() or CONSERVATIVE_MODE
+    if mode not in INSTRUCTIONS_BY_MODE:
+        return JSONResponse({"detail": "Le mode de révision LLM est invalide."}, status_code=400)
+    try:
+        original = normalize_newlines(text)
+        proposal = await run_in_threadpool(propose_with_llm,
+            original,
+            instruction.strip() or None,
+            mode=mode,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+        )
+        proposal = normalize_newlines(proposal)
+        return {"original": original, "proposed": proposal, "changes": make_diff(original, proposal), "segments": make_diff_segments(original, proposal), "mode": "llm", "accepted": False}
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
+
+
+@app.post("/api/audiobook/cleanup-preview")
+def cleanup_preview_audiobook_text(text: str = Form(...)):
+    if not text.strip():
+        return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    original = normalize_newlines(text)
+    cleaned = clean_for_speech(original)
+    return {"original": original, "proposed": cleaned, "changes": make_diff(original, cleaned), "segments": make_diff_segments(original, cleaned), "mode": "deterministic"}
+
+
+@app.post("/api/audiobook/apply-diff")
+def apply_audiobook_diff(original: str = Form(...), proposed: str = Form(...), accepted_ids: str = Form("[]")):
+    try:
+        ids = json.loads(accepted_ids)
+        if not isinstance(ids, list) or not all(isinstance(item, int) for item in ids):
+            raise ValueError("accepted_ids must be a JSON array of integers")
+        return {"text": apply_diff(normalize_newlines(original), normalize_newlines(proposed), set(ids))}
+    except (ValueError, json.JSONDecodeError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.get("/api/settings/llm")
+async def get_llm_settings():
+    return {"base_url": settings.llm_base_url, "model": settings.llm_model, "api_key_configured": bool(settings.llm_api_key)}
+
+
+def _submitted_llm_credentials(base_url: str, api_key: str) -> tuple[str, str]:
+    return base_url.strip(), api_key.strip() or settings.llm_api_key
+
+
+@app.post("/api/settings/llm/models")
+async def get_llm_models(base_url: str = Form(...), api_key: str = Form("")):
+    try:
+        url, key = _submitted_llm_credentials(base_url, api_key)
+        return {"models": await run_in_threadpool(list_models, url, key)}
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
+
+
+@app.post("/api/settings/llm/test")
+async def test_llm_connection(base_url: str = Form(...), model: str = Form(...), api_key: str = Form("")):
+    try:
+        url, key = _submitted_llm_credentials(base_url, api_key)
+        validate_base_url(url)
+        result = await run_in_threadpool(test_connection, url, model.strip(), key)
+        return {"model": model.strip(), "model_available": result.model_available, "model_count": result.model_count, "api_key_configured": bool(key)}
+    except LLMError as exc:
+        return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
+
+
+@app.post("/api/settings/llm")
+async def update_llm_settings(
+    base_url: str = Form(...),
+    model: str = Form(...),
+    api_key: str = Form(""),
+):
+    if not base_url.strip() or not model.strip():
+        return JSONResponse({"detail": "URL et modèle sont obligatoires."}, status_code=400)
+    settings.llm_base_url = base_url.strip()
+    settings.llm_model = model.strip()
+    if api_key.strip():
+        settings.llm_api_key = api_key.strip()
+    repair_llm_base_url()
+    migrate_legacy_llm_settings()
+    save_local_llm_settings()
+    return {"saved": True, "base_url": settings.llm_base_url, "model": settings.llm_model, "api_key_configured": bool(settings.llm_api_key)}
+
+
+@app.post("/api/audiobook/manifest")
+async def save_audiobook_manifest(
+    file: UploadFile = File(...),
+    structure_json: str = Form("[]"),
+):
+    """Persist a reviewed structure locally without contacting a TTS provider."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ttsdocr-manifest-"))
+    path = tmp_dir / (Path(file.filename or "upload").name)
+    path.write_bytes(await file.read())
+    try:
+        book = load_book(path)
+        structure = json.loads(structure_json)
+        if not isinstance(structure, list):
+            raise ValueError("structure_json must be a JSON array")
+        reviewed = apply_structure(book, structure)
+        manifest = {
+            "version": 1,
+            "title": book.title,
+            "author": book.author,
+            "source_filename": path.name,
+            "units": structure,
+        }
+        manifest_dir = Path(settings.output_dir) / "audiobooks" / "manifests"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_dir / f"{path.stem}.structure.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"saved": True, "path": str(manifest_path), "title": reviewed.title, "selected_units": len(reviewed.chapters), "manifest": manifest}
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
@@ -352,6 +552,8 @@ async def synthesize_audiobook(
     model: str = Form("s2.1-pro-free"),
     voice: str | None = Form(None),
     titles_json: str = Form("[]"),
+    selected_json: str = Form("[]"),
+    structure_json: str = Form("[]"),
     confirm_egress: bool = Form(False),
 ):
     if not confirm_egress:
@@ -364,19 +566,29 @@ async def synthesize_audiobook(
     path.write_bytes(await file.read())
     try:
         book = load_book(path)
-        titles = json.loads(titles_json)
-        if titles:
-            if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
-                raise ValueError("titles_json must be a JSON array of strings")
-            book = apply_chapter_titles(book, titles)
+        if structure_json != "[]":
+            structure = json.loads(structure_json)
+            if not isinstance(structure, list):
+                raise ValueError("structure_json must be a JSON array")
+            book = apply_structure(book, structure)
+        else:
+            titles = json.loads(titles_json)
+            selected = json.loads(selected_json)
+            if titles:
+                if not isinstance(titles, list) or not all(isinstance(t, str) for t in titles):
+                    raise ValueError("titles_json must be a JSON array of strings")
+                book = apply_chapter_titles(book, titles)
+            if selected:
+                if not isinstance(selected, list) or not all(isinstance(item, bool) for item in selected):
+                    raise ValueError("selected_json must be a JSON array of booleans")
+                book = apply_chapter_selection(book, selected)
         provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
         book_output_dir = Path(settings.output_dir) / "audiobooks" / path.stem
-        result = build_audiobook(book, book_output_dir, provider, voice=voice or None)
+        result = await run_in_threadpool(build_audiobook, book, book_output_dir, provider, voice=voice or None)
         archive = work_dir / "audiobook-output.zip"
         with ZipFile(archive, "w", ZIP_DEFLATED) as z:
-            for output_file in result.m4b.parent.iterdir():
-                if output_file.is_file() and output_file.suffix.lower() in {".mp3", ".m4b", ".json"}:
-                    z.write(output_file, output_file.name)
+            for output_file in [*result.chapter_files, result.m4b, result.manifest]:
+                z.write(output_file, output_file.name)
         return FileResponse(archive.as_posix(), filename=f"{book.title}.zip", media_type="application/zip")
     except (ValueError, RuntimeError, OSError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -402,7 +614,7 @@ async def synthesize(
     content = await file.read()
     tmp_path.write_bytes(content)
 
-    out_path = synthesize_document(
+    out_path = await run_in_threadpool(synthesize_document,
         tmp_path,
         voice=voice or None,
         temperature=temperature,

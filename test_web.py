@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import os
+import subprocess
 import unittest
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -7,7 +9,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import AUDIOBOOK_HTML, app, settings
+from app.text_diff import make_diff
 
 
 class AudiobookWebTests(unittest.TestCase):
@@ -17,15 +20,137 @@ class AudiobookWebTests(unittest.TestCase):
         cls.fixture = Path(__file__).parent / "tests" / "fixtures" / "mvp-test-book.epub"
 
     def test_audiobook_page_is_available(self):
-        response = self.client.get("/audiobook")
+        response = self.client.get("/audiobook/legacy")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Audiobook", response.text)
+        self.assertIn("Aperçu du texte", response.text)
+        self.assertIn("Fusionner", response.text)
+        self.assertIn("Sauvegarder le manifeste", response.text)
+        self.assertIn("Nettoyer automatiquement", response.text)
+        self.assertIn("Adapter à l’oral", response.text)
+        self.assertIn("Appliquer la sélection", response.text)
+        self.assertIn("Tout accepter", response.text)
+        self.assertIn("Tout refuser", response.text)
+        self.assertIn("Paramètres LLM", response.text)
+        self.assertIn("Plein écran", response.text)
+        self.assertIn("height:100dvh", response.text)
+        self.assertIn("min-height:24rem", response.text)
+        self.assertIn("editor-fullscreen", response.text)
+        self.assertIn("inline-diff", response.text)
+        self.assertIn("editor-toolbar", response.text)
+        self.assertIn("visibleWhitespace", response.text)
+
+    def test_fullscreen_layout_sizes_the_native_details_content(self):
+        response = self.client.get("/audiobook/legacy")
+        css = response.text.split("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertNotIn(".chapter:fullscreen", css)
+        self.assertIn(".chapter.editor-fullscreen .preview::details-content", response.text)
+        self.assertIn(".chapter.editor-fullscreen .preview[open]{grid-template-rows:auto minmax(0,1fr)", response.text)
+        self.assertIn(".chapter.editor-fullscreen .editor-body{height:100%", response.text)
+
+    def test_accepting_every_change_commits_the_proposal_directly(self):
+        response = self.client.get("/audiobook/legacy")
+        self.assertIn("const allAccepted=accepted.length===c.review.changes.length", response.text)
+        self.assertIn("c.text=c.review.proposed", response.text)
+
+    def test_audiobook_javascript_is_valid(self):
+        script = AUDIOBOOK_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+        with TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / "audiobook.js"
+            script_path.write_text(script, encoding="utf-8")
+            result = subprocess.run(["node", "--check", str(script_path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cleanup_endpoint_is_local_and_deterministic(self):
+        response = self.client.post("/api/audiobook/cleanup", data={"text": "mot coup-\n\né\n\n12\n\nSuite."})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cleaned"], "mot coupé\n\nSuite.")
+
+    def test_estimate_uses_current_text_and_model(self):
+        first = self.client.post("/api/audiobook/estimate", json={"text": "bonjour", "model": "paid-model"})
+        second = self.client.post("/api/audiobook/estimate", json={"text": "bonjourbonjour", "model": "paid-model"})
+        self.assertEqual(first.status_code, 200)
+        self.assertAlmostEqual(second.json()["estimated_cost_usd"], first.json()["estimated_cost_usd"] * 2)
+        self.assertTrue(first.json()["estimated"])
+        self.assertIn("indicative", first.json()["warning"])
+        self.assertEqual(self.client.post("/api/audiobook/estimate", json={"text": [], "model": "x"}).status_code, 400)
+
+    def test_llm_request_does_not_block_other_routes(self):
+        import asyncio
+        import threading
+        import httpx
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def propose(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=5)
+            return "Texte proposé"
+
+        async def scenario():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                pending = asyncio.create_task(client.post("/api/audiobook/llm-propose", data={"text": "Texte original"}))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                    response = await asyncio.wait_for(client.get("/api/settings/llm"), timeout=1)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertFalse(pending.done())
+                finally:
+                    release.set()
+                    await pending
+
+        with patch("app.main.propose_with_llm", side_effect=propose):
+            asyncio.run(scenario())
+
+    def test_llm_endpoint_returns_unaccepted_proposal(self):
+        with patch("app.main.propose_with_llm", return_value="Texte proposé") as proposer:
+            response = self.client.post("/api/audiobook/llm-propose", data={"text": "Texte original"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["proposed"], "Texte proposé")
+        self.assertFalse(response.json()["accepted"])
+        proposer.assert_called_once()
+
+    def test_cleanup_preview_and_partial_diff_application(self):
+        original = "Un mot coup-\n\né.\n\n12\n\nSuite."
+        preview = self.client.post("/api/audiobook/cleanup-preview", data={"text": original})
+        self.assertEqual(preview.status_code, 200)
+        data = preview.json()
+        self.assertTrue(data["changes"])
+        self.assertTrue(data["segments"])
+        self.assertTrue(any(segment["kind"] == "equal" for segment in data["segments"]))
+        applied = self.client.post("/api/audiobook/apply-diff", data={"original": original, "proposed": data["proposed"], "accepted_ids": "[]"})
+        self.assertEqual(applied.json()["text"], original)
+
+    def test_cleanup_preview_canonicalizes_windows_newlines(self):
+        response = self.client.post("/api/audiobook/cleanup-preview", data={"text": "Mot coup-\r\n\r\né.\r\n\r\n12\r\n\r\nSuite."})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("\r", data["original"])
+        self.assertNotIn("\r", data["proposed"])
+        self.assertEqual(data["changes"], make_diff(data["original"], data["proposed"]))
+
+    def test_llm_settings_do_not_return_the_secret(self):
+        with patch.object(settings, "llm_api_key", "[REDACTED]"):
+            response = self.client.get("/api/settings/llm")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["api_key_configured"])
+        self.assertNotIn("[REDACTED]", response.text)
+
+    def test_groq_key_auto_selects_groq_defaults(self):
+        with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp), patch.object(settings, "llm_base_url", "http://127.0.0.1:1234/v1"), patch.object(settings, "llm_model", "local-model"), patch.object(settings, "llm_api_key", ""):
+            response = self.client.post("/api/settings/llm", data={"base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "api_key": "gsk_[REDACTED]"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["base_url"], "https://api.groq.com/openai/v1")
+        self.assertEqual(response.json()["model"], "llama-3.3-70b-versatile")
 
     def test_root_uses_audiobook_and_legacy_page_remains_available(self):
         root = self.client.get("/")
         legacy = self.client.get("/tts")
         self.assertEqual(root.status_code, 200)
-        self.assertIn("Importe un EPUB", root.text)
+        self.assertIn("/static/workspace.js", root.text)
+        self.assertEqual(root.text, self.client.get("/audiobook").text)
+        self.assertEqual(self.client.get("/static/workspace.js").status_code, 200)
         self.assertEqual(legacy.status_code, 200)
         self.assertIn("Convert PDF/DOCX/TXT/MD", legacy.text)
 
@@ -36,6 +161,21 @@ class AudiobookWebTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["title"], "Test Audiobook MVP")
         self.assertEqual(len(data["chapters"]), 4)
+        self.assertIn("kind", data["chapters"][0])
+        self.assertIn("confidence", data["chapters"][0])
+        self.assertIn("selected", data["chapters"][0])
+
+    def test_manifest_endpoint_persists_reviewed_structure_without_api_key(self):
+        structure = [{"title": "Chapitre retenu", "text": "Texte narratif", "selected": True}]
+        with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp):
+            with self.fixture.open("rb") as book:
+                response = self.client.post("/api/audiobook/manifest", data={"structure_json": json.dumps(structure)}, files={"file": ("book.epub", book, "application/epub+zip")})
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            manifest_path = Path(data["path"])
+            self.assertTrue(manifest_path.exists())
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["units"][0]["title"], "Chapitre retenu")
 
     def test_synthesis_requires_explicit_consent(self):
         with self.fixture.open("rb") as book:
@@ -52,14 +192,19 @@ class AudiobookWebTests(unittest.TestCase):
             mp3.write_bytes(b"mp3")
             m4b.write_bytes(b"m4b")
             manifest.write_text("{}")
+            (output_dir / "obsolete.mp3").write_bytes(b"old")
             return SimpleNamespace(chapter_files=[mp3], m4b=m4b, manifest=manifest)
 
-        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"FISH_API_KEY": "test-key"}), patch("app.main.FishAudioProvider"), patch("app.main.build_audiobook", side_effect=fake_build):
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"FISH_API_KEY": "[REDACTED]"}), patch("app.main.FishAudioProvider"), patch("app.main.build_audiobook", side_effect=fake_build):
             from app.main import settings
             with patch.object(settings, "output_dir", tmp):
                 with self.fixture.open("rb") as book:
                     response = self.client.post("/api/audiobook/synthesize", data={"confirm_egress": "true", "titles_json": "[]"}, files={"file": ("book.epub", book, "application/epub+zip")})
             self.assertEqual(response.status_code, 200)
+            from io import BytesIO
+            from zipfile import ZipFile
+            with ZipFile(BytesIO(response.content)) as archive:
+                self.assertNotIn("obsolete.mp3", archive.namelist())
             self.assertTrue((Path(tmp) / "audiobooks" / "book").exists())
             self.assertTrue((Path(tmp) / "audiobooks" / "book" / "Book.m4b").exists())
 

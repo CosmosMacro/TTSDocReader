@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -31,8 +32,56 @@ class Settings:
     # - PARLER_MODEL: HF model id (e.g., "parler-tts/parler-tts-mini-v1")
     parler_model: str = os.getenv("PARLER_MODEL", "parler-tts/parler-tts-mini-v1")
 
+    # Optional local/OpenAI-compatible LLM used only for review proposals.
+    llm_base_url: str = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+    llm_model: str = os.getenv("LLM_MODEL", "local-model")
+    llm_api_key: str = os.getenv("LLM_API_KEY", "")
+
 
 settings = Settings()
+
+
+def migrate_legacy_llm_settings() -> None:
+    """Migrate the old LM Studio defaults only when a Groq key proves intent."""
+    if settings.llm_api_key.startswith("gsk_") and settings.llm_base_url.rstrip("/") in {"http://127.0.0.1:1234/v1", "http://localhost:1234/v1"}:
+        settings.llm_base_url = "https://api.groq.com/openai/v1"
+        if settings.llm_model == "local-model":
+            settings.llm_model = "llama-3.3-70b-versatile"
+
+
+def repair_llm_base_url() -> None:
+    """Repair a legacy save that accidentally concatenated two URL values."""
+    for marker in ("http://", "https://"):
+        second = settings.llm_base_url.find(marker, len(marker))
+        if second > 0:
+            settings.llm_base_url = settings.llm_base_url[:second].rstrip("/")
+            break
+
+
+def _llm_settings_path() -> Path:
+    return Path(settings.output_dir) / "llm_settings.json"
+
+
+def load_local_llm_settings() -> None:
+    try:
+        data = json.loads(_llm_settings_path().read_text(encoding="utf-8-sig"))
+        if isinstance(data, dict):
+            settings.llm_base_url = str(data.get("base_url", settings.llm_base_url))
+            settings.llm_model = str(data.get("model", settings.llm_model))
+            settings.llm_api_key = str(data.get("api_key", settings.llm_api_key))
+            repair_llm_base_url()
+            migrate_legacy_llm_settings()
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def save_local_llm_settings() -> None:
+    path = _llm_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"base_url": settings.llm_base_url, "model": settings.llm_model, "api_key": settings.llm_api_key}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+load_local_llm_settings()
 
 # Ensure output directory exists
 os.makedirs(settings.output_dir, exist_ok=True)

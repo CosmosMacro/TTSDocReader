@@ -1,11 +1,25 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
-from app.books import Book, Chapter, apply_chapter_titles, load_book
+from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
+from app.text_prepare import clean_for_speech
+from app.text_diff import apply_diff, make_diff, make_diff_segments
 
 
 class BookImportTests(unittest.TestCase):
+    def test_docx_uses_shared_extractor(self):
+        with patch("app.books.extract_text", return_value="Titre\n\nContenu") as extract:
+            book = load_book(Path("document.docx"))
+        extract.assert_called_once_with(Path("document.docx"))
+        self.assertEqual(book.chapters[0].text, "Titre\n\nContenu")
+
+    def test_empty_import_explains_scanned_pdf_ocr_requirement(self):
+        with patch("app.books.extract_text", return_value="   "):
+            with self.assertRaisesRegex(ValueError, "Aucun texte exploitable.*OCR"):
+                load_book(Path("scan.pdf"))
+
     def test_epub_import_preserves_spine_chapters_and_metadata(self):
         with TemporaryDirectory() as tmp:
             epub = Path(tmp) / "sample.epub"
@@ -18,15 +32,16 @@ class BookImportTests(unittest.TestCase):
                 z.writestr("OPS/content.opf", """<?xml version='1.0'?>
                     <package xmlns='http://www.idpf.org/2007/opf' version='3.0'>
                       <metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title>Psychiatrie en pratique</dc:title><dc:creator>Dr Test</dc:creator></metadata>
-                      <manifest><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest>
+                      <manifest><item id='nav' href='nav.xhtml' media-type='application/xhtml+xml' properties='nav'/><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest>
                       <spine><itemref idref='c1'/><itemref idref='c2'/></spine>
                     </package>""")
-                z.writestr("OPS/chapter1.xhtml", "<html><body><h1>Introduction</h1><p>Premier chapitre.</p></body></html>")
-                z.writestr("OPS/chapter2.xhtml", "<html><body><h1>Conclusion</h1><p>Dernier chapitre.</p></body></html>")
+                z.writestr("OPS/chapter1.xhtml", "<html><body><section id='s1'><h1>Titre interne erroné</h1><p>Premier chapitre.</p></section></body></html>")
+                z.writestr("OPS/chapter2.xhtml", "<html><body><section id='s2'><h1>Conclusion interne</h1><p>Dernier chapitre.</p></section></body></html>")
+                z.writestr("OPS/nav.xhtml", "<html><body><nav epub:type='toc'><ol><li><a href='chapter1.xhtml#s1'>Introduction clinique</a></li><li><a href='chapter2.xhtml#s2'>Conclusion clinique</a></li></ol></nav></body></html>")
             book = load_book(epub)
             self.assertEqual(book.title, "Psychiatrie en pratique")
             self.assertEqual(book.author, "Dr Test")
-            self.assertEqual([c.title for c in book.chapters], ["Introduction", "Conclusion"])
+            self.assertEqual([c.title for c in book.chapters], ["Introduction clinique", "Conclusion clinique"])
             self.assertEqual(book.chapters[0].text, "Premier chapitre.")
 
     def test_heading_detection_can_split_plain_text(self):
@@ -41,6 +56,60 @@ class BookImportTests(unittest.TestCase):
         corrected = apply_chapter_titles(book, ["Corrected title"])
         self.assertEqual(corrected.chapters[0].title, "Corrected title")
         self.assertEqual(corrected.chapters[0].text, "Body")
+
+    def test_hybrid_classifier_groups_non_narrative_and_keeps_real_chapters(self):
+        front = Chapter("Table des matières", "Chapitre 1 ...", 1)
+        real = Chapter("Chapitre 1 - Bases", "Long contenu clinique. " * 30, 2)
+        unknown = Chapter("Chapitre 13", "", 3)
+        self.assertEqual(classify_chapter(front).kind, "toc")
+        self.assertFalse(classify_chapter(front).selected)
+        self.assertEqual(classify_chapter(real).kind, "chapter")
+        self.assertTrue(classify_chapter(real).selected)
+        self.assertEqual(classify_chapter(unknown).kind, "unknown")
+        self.assertFalse(classify_chapter(unknown).selected)
+
+    def test_chapter_selection_filters_without_reindexing_gaps(self):
+        book = Book("Book", None, Path("book.epub"), [
+            Chapter("Preface", "intro", 1),
+            Chapter("Chapter 1", "body", 2),
+        ])
+        selected = apply_chapter_selection(book, [False, True])
+        self.assertEqual([c.title for c in selected.chapters], ["Chapter 1"])
+        self.assertEqual(selected.chapters[0].index, 1)
+
+    def test_diff_can_accept_or_reject_each_cleanup_change(self):
+        original = "Un mot coup-\n\né.\n\n42\n\nSuite."
+        proposed = clean_for_speech(original)
+        changes = make_diff(original, proposed)
+        segments = make_diff_segments(original, proposed)
+        self.assertGreaterEqual(len(changes), 1)
+        self.assertTrue(any(segment["kind"] == "equal" for segment in segments))
+        self.assertEqual("".join(segment["original"] for segment in segments), original)
+        self.assertEqual(apply_diff(original, proposed, {c["id"] for c in changes}), proposed)
+        self.assertEqual(apply_diff(original, proposed, set()), original)
+
+        source = "Un mot coup-\n\né.\n\n42\n\nDeuxième paragraphe."
+        cleaned = clean_for_speech(source)
+        self.assertEqual(cleaned, "Un mot coupé.\n\nDeuxième paragraphe.")
+
+        book = Book("Book", None, Path("book.epub"), [Chapter("Original", "old", 1)])
+        edited = apply_structure(book, [{"title": "Merged", "text": "new text", "selected": True}])
+        self.assertEqual(edited.chapters[0].title, "Merged")
+        self.assertEqual(edited.chapters[0].text, "new text")
+        with self.assertRaises(ValueError):
+            apply_structure(book, [])
+
+    def test_cleanup_and_accepted_diff_are_idempotent_for_windows_and_unix_newlines(self):
+        for original in (
+            "Mot coup-\r\n\r\nÃ©.\r\n\r\n12\r\n\r\nSuite.\r\n\r\n\r\nFin.",
+            "Mot coup-\n\nÃ©.\n\n12\n\nSuite.\n\n\nFin.",
+        ):
+            cleaned = clean_for_speech(original)
+            self.assertEqual(clean_for_speech(cleaned), cleaned)
+            changes = make_diff(original, cleaned)
+            applied = apply_diff(original, cleaned, {change["id"] for change in changes})
+            self.assertEqual(applied, cleaned)
+            self.assertEqual(make_diff(applied, clean_for_speech(applied)), [])
 
 
 if __name__ == "__main__":

@@ -339,10 +339,12 @@ def load_book(path: str | Path) -> Book:
     source = Path(path)
     if source.suffix.lower() == ".epub":
         return _parse_epub(source)
-    if source.suffix.lower() == ".pdf":
+    if source.suffix.lower() in {".pdf", ".docx", ".txt", ".md"}:
         text = extract_text(source)
-        return Book(source.stem, None, source, split_text_into_chapters(text))
-    if source.suffix.lower() in {".txt", ".md"}:
-        text = extract_text(source)
+        if not text.strip():
+            raise ValueError(
+                "Aucun texte exploitable n'a été trouvé. Si ce document est un PDF numérisé, "
+                "effectuez d'abord un OCR puis réimportez-le."
+            )
         return Book(source.stem, None, source, split_text_into_chapters(text))
     raise ValueError(f"Unsupported book extension: {source.suffix}")

@@ -8,18 +8,24 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .audiobook import build_audiobook
 from .books import apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 from .config import migrate_legacy_llm_settings, repair_llm_base_url, save_local_llm_settings, settings
 from .fish_audio import FishAudioProvider, estimate_cost_usd
-from .llm import LLMError, list_models, propose_with_llm, test_connection, validate_base_url
+from .llm import CONSERVATIVE_MODE, INSTRUCTIONS_BY_MODE, LLMError, list_models, propose_with_llm, test_connection, validate_base_url
 from .pipeline import synthesize_document
 from .piper_voices import list_piper_voices_json
 from .text_diff import apply_diff, make_diff, make_diff_segments
 from .text_prepare import clean_for_speech, normalize_newlines
+from .project_api import router as project_router
 
 app = FastAPI(title="TTSDocReader")
+app.include_router(project_router)
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR, check_dir=False), name="static")
 
 INDEX_HTML = f"""
 <!doctype html>
@@ -310,7 +316,8 @@ INDEX_HTML = f"""
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return AUDIOBOOK_HTML
+    html = (STATIC_DIR / "workspace.html").read_text(encoding="utf-8")
+    return html.replace("/static/workspace.js", "/static/workspace.js?v=oral-adaptation-2")
 
 
 @app.get("/tts", response_class=HTMLResponse)
@@ -332,15 +339,15 @@ const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll
 function syncDom(){if(!current)return;current.chapters.forEach((c,i)=>{const p=document.querySelector(`.pick[data-i="${i}"]`),t=document.querySelector(`.title[data-i="${i}"]`),e=document.querySelector(`.edit-text[data-i="${i}"]`);if(p)c.selected=p.checked;if(t)c.title=t.value;if(e)c.text=normalizeNewlines(e.value);if(c.review)c.review.changes.forEach(ch=>{const box=document.querySelector(`.diff-pick[data-unit="${i}"][data-id="${ch.id}"]`);if(box)ch.accepted=box.checked;});});}
 function visibleWhitespace(s){return esc(s).replaceAll(' ','·').replaceAll(String.fromCharCode(9),'⇥').replaceAll(String.fromCharCode(10),'↵<br>');}
 function changedText(s){return s.trim()?esc(s):visibleWhitespace(s);}
-function reviewHtml(c,i){if(!c.review)return '';const segments=c.review.segments||[];const flow=segments.map(seg=>{if(seg.kind==='equal')return `<span>${esc(seg.original)}</span>`;const change=c.review.changes.find(ch=>ch.id===seg.id),checked=change&&change.accepted?'checked':'';const pick=`<input class="diff-pick" data-unit="${i}" data-id="${seg.id}" type="checkbox" ${checked} title="Inclure cette modification">`;if(seg.kind==='insert')return `<label class="diff-unit">${pick}<ins>${changedText(seg.proposed)}</ins></label>`;if(seg.kind==='delete')return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del></label>`;return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del><ins>${changedText(seg.proposed)}</ins></label>`;}).join('');if(!c.review.changes.length)return `<div class="inline-diff">${esc(c.review.original)}</div><div class="review-actions"><b>Aucune modification détectée.</b><button type="button" data-action="cancel-review" data-i="${i}">Fermer</button></div>`;return `<div class="inline-diff">${flow}</div><div class="review-actions"><b>${c.review.mode==='llm'?'Proposition IA':'Nettoyage automatique'} :</b><button type="button" data-action="all-review" data-i="${i}">Tout accepter</button><button type="button" data-action="none-review" data-i="${i}">Tout refuser</button><button type="button" data-action="apply-review" data-i="${i}">Appliquer la sélection</button><button type="button" data-action="cancel-review" data-i="${i}">Annuler</button></div>`;}
-function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''} ${c.i===fullscreenIndex?'editor-fullscreen':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button><button type="button" data-action="fullscreen" data-i="${c.i}">${c.i===fullscreenIndex?'Quitter le plein écran':'Plein écran'}</button></div><details class="preview" ${c.i===fullscreenIndex?'open':''}><summary>Aperçu du texte / Modifier le texte</summary><div class="editor-toolbar"><button type="button" data-action="clean" data-i="${c.i}">Nettoyer automatiquement</button><button type="button" data-action="llm" data-i="${c.i}">Proposer avec IA</button>${c.error?`<span class="error">${esc(c.error)}</span>`:''}</div><div class="editor-body">${c.review?reviewHtml(c,c.i):`<textarea class="edit-text" data-i="${c.i}">${esc(c.text)}</textarea>`}</div></details></div>`).join('')}</div>`).join('');}
+function reviewHtml(c,i){if(!c.review)return '';const segments=c.review.segments||[];const flow=segments.map(seg=>{if(seg.kind==='equal')return `<span>${esc(seg.original)}</span>`;const change=c.review.changes.find(ch=>ch.id===seg.id),checked=change&&change.accepted?'checked':'';const pick=`<input class="diff-pick" data-unit="${i}" data-id="${seg.id}" type="checkbox" ${checked} title="Inclure cette modification">`;if(seg.kind==='insert')return `<label class="diff-unit">${pick}<ins>${changedText(seg.proposed)}</ins></label>`;if(seg.kind==='delete')return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del></label>`;return `<label class="diff-unit">${pick}<del>${changedText(seg.original)}</del><ins>${changedText(seg.proposed)}</ins></label>`;}).join('');if(!c.review.changes.length)return `<div class="inline-diff">${esc(c.review.original)}</div><div class="review-actions"><b>Aucune modification détectée.</b><button type="button" data-action="cancel-review" data-i="${i}">Fermer</button></div>`;return `<div class="inline-diff">${flow}</div><div class="review-actions"><b>${c.review.mode==='llm'?'Adaptation à l’oral':'Nettoyage automatique'} :</b><button type="button" data-action="all-review" data-i="${i}">Tout accepter</button><button type="button" data-action="none-review" data-i="${i}">Tout refuser</button><button type="button" data-action="apply-review" data-i="${i}">Appliquer la sélection</button><button type="button" data-action="cancel-review" data-i="${i}">Annuler</button></div>`;}
+function render(){const groups={};current.chapters.forEach((c,i)=>(groups[c.group]??=[]).push({...c,i}));$('chapters').innerHTML=Object.entries(groups).map(([group,items])=>`<div class="group"><h3>${esc(group)} <small>(${items.filter(c=>c.selected).length}/${items.length} sélectionnés)</small></h3>${items.map(c=>`<div class="chapter ${c.confidence<.7?'low':''} ${c.i===fullscreenIndex?'editor-fullscreen':''}"><input class="pick" data-i="${c.i}" type="checkbox" ${c.selected?'checked':''}><input class="title" data-i="${c.i}" type="text" value="${esc(c.title)}"><small>${esc(c.kind)} · ${Math.round(c.confidence*100)}%</small><div class="tools"><button type="button" data-action="up" data-i="${c.i}">↑</button><button type="button" data-action="down" data-i="${c.i}">↓</button><button type="button" data-action="merge" data-i="${c.i}">Fusionner ↓</button><button type="button" data-action="split" data-i="${c.i}">Séparer</button><button type="button" data-action="fullscreen" data-i="${c.i}">${c.i===fullscreenIndex?'Quitter le plein écran':'Plein écran'}</button></div><details class="preview" ${c.i===fullscreenIndex?'open':''}><summary>Aperçu du texte / Modifier le texte</summary><div class="editor-toolbar"><button type="button" data-action="clean" data-i="${c.i}">Nettoyer automatiquement</button><button type="button" data-action="llm" data-i="${c.i}">Adapter à l’oral</button>${c.error?`<span class="error">${esc(c.error)}</span>`:''}</div><div class="editor-body">${c.review?reviewHtml(c,c.i):`<textarea class="edit-text" data-i="${c.i}">${esc(c.text)}</textarea>`}</div></details></div>`).join('')}</div>`).join('');}
 function addCopyButtons(){document.querySelectorAll('.review-actions').forEach(a=>{if(a.querySelector('[data-action="copy-review"]'))return;const b=document.createElement('button');b.type='button';b.dataset.action='copy-review';b.dataset.i=a.closest('.chapter')?.querySelector('.diff-pick')?.dataset.unit||'';b.textContent='Copier la proposition';a.insertBefore(b,a.querySelector('[data-action="apply-review"]'));});}
 function setSelection(predicate){syncDom();current.chapters.forEach(c=>c.selected=predicate(c));render();}
 function structure(){syncDom();return current.chapters.map(c=>({title:c.title,text:c.text,selected:!!c.selected,kind:c.kind,group:c.group,confidence:c.confidence}));}
 function move(i,delta){syncDom();const j=i+delta;if(j<0||j>=current.chapters.length)return;[current.chapters[i],current.chapters[j]]=[current.chapters[j],current.chapters[i]];render();}
 function merge(i){syncDom();if(i>=current.chapters.length-1)return;const a=current.chapters[i],b=current.chapters[i+1];a.title=a.title+' / '+b.title;a.text=a.text+'\\n\\n'+b.text;a.selected=a.selected||b.selected;a.confidence=Math.min(a.confidence,b.confidence);current.chapters.splice(i+1,1);render();}
 function split(i){syncDom();const c=current.chapters[i],at=prompt('Texte qui commence la seconde unité (copie une phrase ou un titre)');if(!at)return;const pos=c.text.indexOf(at);if(pos<=0){alert('Marqueur introuvable ou placé au début.');return;}const first=c.text.slice(0,pos).trim(),second=c.text.slice(pos).trim();if(!first||!second)return;c.text=first;current.chapters.splice(i+1,0,{...c,title:c.title+' (suite)',text:second,confidence:Math.min(c.confidence,.6)});render();}
-$('chapters').onclick=async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action,c=current.chapters[i];if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);if(a==='fullscreen'){syncDom();fullscreenIndex=fullscreenIndex===i?null:i;render();return;}if(a==='all-review'||a==='none-review'){syncDom();c.review.changes.forEach(ch=>ch.accepted=a==='all-review');render();}if(a==='cancel-review'){syncDom();c.text=c.review.original;delete c.review;render();$('status').textContent='Proposition annulée.';}if(a==='apply-review'){syncDom();const accepted=c.review.changes.filter(ch=>ch.accepted).map(ch=>ch.id);const allAccepted=accepted.length===c.review.changes.length;if(allAccepted){c.text=c.review.proposed;delete c.review;render();$('status').textContent='Toutes les modifications ont été appliquées.';return;}const fd=new FormData();fd.append('original',c.review.original);fd.append('proposed',c.review.proposed);fd.append('accepted_ids',JSON.stringify(accepted));const r=await fetch('/api/audiobook/apply-diff',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}c.text=d.text;delete c.review;render();$('status').textContent='Modifications appliquées.';}if(a==='clean'||a==='llm'){syncDom();const fd=new FormData();fd.append('text',c.text);$('status').textContent=a==='clean'?'Préparation du diff…':'Proposition IA en cours…';const r=await fetch(a==='clean'?'/api/audiobook/cleanup-preview':'/api/audiobook/llm-propose',{method:'POST',body:fd}),d=await r.json();if(!r.ok){c.error=d.detail||`Erreur HTTP ${r.status}`;render();$('status').textContent=c.error;return;}delete c.error;c.review={original:d.original,proposed:d.proposed,changes:d.changes,segments:d.segments||[],mode:d.mode};render();$('status').textContent=a==='clean'?'Diff affiché dans le corps du texte : vérifie puis applique ou annule.':'Revue disponible : accepte ou refuse chaque changement.';}};
+$('chapters').onclick=async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const i=Number(b.dataset.i),a=b.dataset.action,c=current.chapters[i];if(a==='up')move(i,-1);if(a==='down')move(i,1);if(a==='merge')merge(i);if(a==='split')split(i);if(a==='fullscreen'){syncDom();fullscreenIndex=fullscreenIndex===i?null:i;render();return;}if(a==='all-review'||a==='none-review'){syncDom();c.review.changes.forEach(ch=>ch.accepted=a==='all-review');render();}if(a==='cancel-review'){syncDom();c.text=c.review.original;delete c.review;render();$('status').textContent='Proposition annulée.';}if(a==='apply-review'){syncDom();const accepted=c.review.changes.filter(ch=>ch.accepted).map(ch=>ch.id);const allAccepted=accepted.length===c.review.changes.length;if(allAccepted){c.text=c.review.proposed;delete c.review;render();$('status').textContent='Toutes les modifications ont été appliquées.';return;}const fd=new FormData();fd.append('original',c.review.original);fd.append('proposed',c.review.proposed);fd.append('accepted_ids',JSON.stringify(accepted));const r=await fetch('/api/audiobook/apply-diff',{method:'POST',body:fd}),d=await r.json();if(!r.ok){$('status').textContent=d.detail||'Erreur';return;}c.text=d.text;delete c.review;render();$('status').textContent='Modifications appliquées.';}if(a==='clean'||a==='llm'){syncDom();const fd=new FormData();fd.append('text',c.text);if(a==='llm')fd.append('mode','oral');$('status').textContent=a==='clean'?'Préparation du diff…':'Adaptation à l’oral en cours…';const r=await fetch(a==='clean'?'/api/audiobook/cleanup-preview':'/api/audiobook/llm-propose',{method:'POST',body:fd}),d=await r.json();if(!r.ok){c.error=d.detail||`Erreur HTTP ${r.status}`;render();$('status').textContent=c.error;return;}delete c.error;c.review={original:d.original,proposed:d.proposed,changes:d.changes,segments:d.segments||[],mode:d.mode};render();$('status').textContent=a==='clean'?'Diff affiché dans le corps du texte : vérifie puis applique ou annule.':'Adaptation proposée : accepte ou refuse chaque changement.';}};
 $('llmSettingsBtn').onclick=async()=>{const r=await fetch('/api/settings/llm'),d=await r.json();$('llmBaseUrl').value=d.base_url;$('llmModel').value=d.model;$('llmKey').value='';$('llmStatus').textContent=d.api_key_configured?'Clé configurée localement.':'Aucune clé configurée.';$('llmDialog').showModal();};
 $('llmClose').onclick=()=>$('llmDialog').close();
 new MutationObserver(addCopyButtons).observe($('chapters'),{childList:true,subtree:true});$('chapters').addEventListener('click',async e=>{const b=e.target.closest('[data-action="copy-review"]');if(!b)return;const c=current.chapters[Number(b.dataset.i)];if(!c?.review)return;try{await navigator.clipboard.writeText(c.review.proposed);$('status').textContent='Proposition copiée sans les marques du diff.';}catch(_){$('status').textContent='Copie impossible : utilise Appliquer la sélection.';}});
@@ -362,7 +369,26 @@ $('generate').onclick=async()=>{if(!$('consent').checked){$('status').textConten
 
 @app.get("/audiobook", response_class=HTMLResponse)
 async def audiobook_page():
-    return AUDIOBOOK_HTML
+    return await index()
+
+
+@app.get("/audiobook/legacy", response_class=HTMLResponse)
+async def legacy_audiobook_page():
+    html = AUDIOBOOK_HTML.replace("Proposer avec IA", "Adapter à l’oral")
+    html = html.replace("Proposition IA", "Adaptation à l’oral")
+    html = html.replace("fd.append('text',c.text);$('status').textContent", "fd.append('text',c.text);if(a==='llm')fd.append('mode','oral');$('status').textContent")
+    loading_feedback = """
+<style>
+#status.is-loading{display:flex;align-items:center;gap:.55rem}
+#status.is-loading::before{content:"";width:1rem;height:1rem;border:2px solid #d8d4f7;border-top-color:#6759ff;border-radius:50%;flex:none;animation:status-spin .8s linear infinite}
+@keyframes status-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#status.is-loading::before{animation:none;border-top-color:#6759ff}}
+</style>
+<script>
+(()=>{const status=document.getElementById('status');if(!status)return;status.setAttribute('role','status');status.setAttribute('aria-live','polite');const update=()=>{const busy=/(en cours|en attente|vérification|préparation)/i.test(status.textContent||'');status.classList.toggle('is-loading',busy);status.setAttribute('aria-busy',String(busy));};new MutationObserver(update).observe(status,{childList:true,characterData:true,subtree:true});update();})();
+</script>
+"""
+    return html.replace("</body>", loading_feedback + "</body>")
 
 
 @app.post("/api/audiobook/inspect")
@@ -379,22 +405,39 @@ async def inspect_audiobook(file: UploadFile = File(...), model: str = Form("s2.
 
 
 @app.post("/api/audiobook/cleanup")
-async def cleanup_audiobook_text(text: str = Form(...)):
+def cleanup_audiobook_text(text: str = Form(...)):
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
     original = normalize_newlines(text)
     return {"original": original, "cleaned": clean_for_speech(original), "mode": "deterministic"}
 
 
+@app.post("/api/audiobook/estimate")
+async def estimate_audiobook(payload: dict):
+    text = payload.get("text", "")
+    model = payload.get("model", "")
+    if not isinstance(text, str) or not isinstance(model, str) or not model.strip():
+        return JSONResponse({"detail": "Texte et modèle valides requis."}, status_code=400)
+    return {
+        "estimated_cost_usd": estimate_cost_usd(text, model),
+        "estimated": True,
+        "warning": "Estimation indicative selon le barème local ; vérifiez le tarif du fournisseur.",
+    }
+
+
 @app.post("/api/audiobook/llm-propose")
-async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = Form("")):
+async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = Form(""), mode: str = Form(CONSERVATIVE_MODE)):
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
+    mode = mode.strip() or CONSERVATIVE_MODE
+    if mode not in INSTRUCTIONS_BY_MODE:
+        return JSONResponse({"detail": "Le mode de révision LLM est invalide."}, status_code=400)
     try:
         original = normalize_newlines(text)
-        proposal = propose_with_llm(
+        proposal = await run_in_threadpool(propose_with_llm,
             original,
             instruction.strip() or None,
+            mode=mode,
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             api_key=settings.llm_api_key,
@@ -406,7 +449,7 @@ async def llm_propose_audiobook_text(text: str = Form(...), instruction: str = F
 
 
 @app.post("/api/audiobook/cleanup-preview")
-async def cleanup_preview_audiobook_text(text: str = Form(...)):
+def cleanup_preview_audiobook_text(text: str = Form(...)):
     if not text.strip():
         return JSONResponse({"detail": "Le texte est vide."}, status_code=400)
     original = normalize_newlines(text)
@@ -415,7 +458,7 @@ async def cleanup_preview_audiobook_text(text: str = Form(...)):
 
 
 @app.post("/api/audiobook/apply-diff")
-async def apply_audiobook_diff(original: str = Form(...), proposed: str = Form(...), accepted_ids: str = Form("[]")):
+def apply_audiobook_diff(original: str = Form(...), proposed: str = Form(...), accepted_ids: str = Form("[]")):
     try:
         ids = json.loads(accepted_ids)
         if not isinstance(ids, list) or not all(isinstance(item, int) for item in ids):
@@ -438,7 +481,7 @@ def _submitted_llm_credentials(base_url: str, api_key: str) -> tuple[str, str]:
 async def get_llm_models(base_url: str = Form(...), api_key: str = Form("")):
     try:
         url, key = _submitted_llm_credentials(base_url, api_key)
-        return {"models": list_models(url, key)}
+        return {"models": await run_in_threadpool(list_models, url, key)}
     except LLMError as exc:
         return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
 
@@ -448,7 +491,7 @@ async def test_llm_connection(base_url: str = Form(...), model: str = Form(...),
     try:
         url, key = _submitted_llm_credentials(base_url, api_key)
         validate_base_url(url)
-        result = test_connection(url, model.strip(), key)
+        result = await run_in_threadpool(test_connection, url, model.strip(), key)
         return {"model": model.strip(), "model_available": result.model_available, "model_count": result.model_count, "api_key_configured": bool(key)}
     except LLMError as exc:
         return JSONResponse({"detail": exc.public_message, "provider_status": exc.status_code}, status_code=exc.status_code)
@@ -541,12 +584,11 @@ async def synthesize_audiobook(
                 book = apply_chapter_selection(book, selected)
         provider = FishAudioProvider(api_key, model=model, reference_id=voice or None)
         book_output_dir = Path(settings.output_dir) / "audiobooks" / path.stem
-        result = build_audiobook(book, book_output_dir, provider, voice=voice or None)
+        result = await run_in_threadpool(build_audiobook, book, book_output_dir, provider, voice=voice or None)
         archive = work_dir / "audiobook-output.zip"
         with ZipFile(archive, "w", ZIP_DEFLATED) as z:
-            for output_file in result.m4b.parent.iterdir():
-                if output_file.is_file() and output_file.suffix.lower() in {".mp3", ".m4b", ".json"}:
-                    z.write(output_file, output_file.name)
+            for output_file in [*result.chapter_files, result.m4b, result.manifest]:
+                z.write(output_file, output_file.name)
         return FileResponse(archive.as_posix(), filename=f"{book.title}.zip", media_type="application/zip")
     except (ValueError, RuntimeError, OSError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -572,7 +614,7 @@ async def synthesize(
     content = await file.read()
     tmp_path.write_bytes(content)
 
-    out_path = synthesize_document(
+    out_path = await run_in_threadpool(synthesize_document,
         tmp_path,
         voice=voice or None,
         temperature=temperature,

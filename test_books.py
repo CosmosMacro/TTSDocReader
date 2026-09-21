@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from app.books import Book, Chapter, apply_chapter_selection, apply_chapter_titles, apply_structure, classify_chapter, load_book
 from app.text_prepare import clean_for_speech
@@ -8,6 +9,17 @@ from app.text_diff import apply_diff, make_diff, make_diff_segments
 
 
 class BookImportTests(unittest.TestCase):
+    def test_docx_uses_shared_extractor(self):
+        with patch("app.books.extract_text", return_value="Titre\n\nContenu") as extract:
+            book = load_book(Path("document.docx"))
+        extract.assert_called_once_with(Path("document.docx"))
+        self.assertEqual(book.chapters[0].text, "Titre\n\nContenu")
+
+    def test_empty_import_explains_scanned_pdf_ocr_requirement(self):
+        with patch("app.books.extract_text", return_value="   "):
+            with self.assertRaisesRegex(ValueError, "Aucun texte exploitable.*OCR"):
+                load_book(Path("scan.pdf"))
+
     def test_epub_import_preserves_spine_chapters_and_metadata(self):
         with TemporaryDirectory() as tmp:
             epub = Path(tmp) / "sample.epub"

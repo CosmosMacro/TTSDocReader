@@ -1,6 +1,25 @@
 # TTSDocReader
 
-Convert your documents (PDF/DOCX/TXT/MD) into natural-sounding audio using multiple TTS backends (Orpheus, Parler, Piper, pyttsx3).
+Prepare EPUB/PDF/DOCX/TXT/Markdown documents as persistent local projects, review their text, generate individual chapter MP3s with Fish Audio, and assemble a navigable M4B. The legacy converter also supports local TTS backends (Orpheus, Parler, Piper, pyttsx3).
+
+## Audiobook workspace
+
+Open `/` or `/audiobook` after starting the server. The workspace keeps projects
+under `outputs/projects` (or `OUTPUT_DIR/projects`), with automatic saving,
+chapter validation, text history, per-chapter audio generation and background
+job progress. Excluded chapters are compact; validated text can be unlocked for
+further editing. Existing audio is marked stale when its text or voice changes.
+
+Fish Audio generation requires `FISH_API_KEY` and explicit consent in the UI.
+Install FFmpeg and FFprobe on the PATH, or configure `FFMPEG_BIN` and
+`FFPROBE_BIN` with their executable paths. The application displays missing
+prerequisites before generation. An audio preview can also incur provider costs.
+M4B assembly uses existing chapter audio and does not call the TTS provider.
+
+Run one Uvicorn worker for this local workspace. Scanned PDFs require external
+OCR first. See [the workspace guide](docs/AUDIOBOOK_WORKSPACE.md) for persistence,
+generation, cancellation and validation details. Existing interfaces remain at
+`/tts` and `/audiobook/legacy`.
 
 ## Installation
 

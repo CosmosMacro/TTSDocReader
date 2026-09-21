@@ -23,6 +23,51 @@ DEFAULT_INSTRUCTION = (
     "Retourne immédiatement uniquement le texte révisé, sans introduction, explication, balise Markdown, "
     "commentaire ou liste de modifications."
 )
+CONSERVATIVE_MODE = "conservative"
+ORAL_ADAPTATION_MODE = "oral"
+
+ORAL_ADAPTATION_INSTRUCTION = (
+    "Tu adaptes un texte français pour qu'un narrateur humain puisse le lire naturellement à voix haute et qu'il "
+    "soit compris à l'écoute seule. C'est une adaptation fidèle, pas un résumé.\n\n"
+    "Reste fidèle au contenu substantiel : conserve vocabulaire technique ou clinique, faits, noms, dates, chiffres, "
+    "exemples, chaque élément d'une liste, ordre de l'argumentation, attributions, répétitions rhétoriques ou "
+    "pédagogiques et toutes les nuances. Protège tout particulièrement les négations, la causalité par rapport à "
+    "l'association, le degré de certitude et les conditionnels : « serait » ne devient jamais « est ». N'ajoute aucun "
+    "fait, ne complète aucun contexte absent, ne recommande rien de nouveau et ne vérifie pas les faits. "
+    "Si une phrase est déjà claire à l'oral, conserve-la.\n\n"
+    "Allège seulement les éléments éditoriaux qui gênent l'écoute : supprime les références bibliographiques "
+    "parenthétiques, auteur-année, les DOI bibliographiques, la pagination et les appels numériques ou exposants de "
+    "notes lorsqu'ils sont clairement des références. Pour une attribution pertinente au raisonnement (théorie, "
+    "modèle, idée attribuée ou citation directe), garde l'auteur ou la source, mais retire l'année bibliographique. "
+    "Les citations directes gardent exactement leurs mots. Une liste d'auteurs qui étaye simplement une affirmation "
+    "peut être retirée avec son appel : « Différents travaux (A ; B) suggèrent » devient « Différents travaux "
+    "suggèrent ». Ne supprime jamais une date ou un nombre utile, ni le contenu d'une parenthèse explicative.\n\n"
+    "Supprime les renvois purement visuels (« voir figure », « tableau », « page », « ci-dessus » et « voir plus loin » "
+    "lorsqu'ils ne font qu'orienter la lecture), ainsi que les "
+    "intitulés, numéros et crédits de figures ou tableaux. En revanche, conserve et intègre à la narration toute "
+    "information unique portée par une légende ou un tableau, avec ses données et ses nuances ; retire seulement "
+    "les répétitions strictement identiques présentes juste à proximité. Ne prétends jamais décrire un visuel absent. "
+    "Une définition de sigle ne peut disparaître que si elle ne sert qu'au visuel supprimé. Si une note explicative "
+    "est fournie, garde son sens et enlève son appel ; n'invente pas de note manquante.\n\n"
+    "Pour l'oral, scinde les phrases longues, transforme les incises utiles en phrases fluides, et rends les listes "
+    "audibles sans perdre d'éléments. Garde les titres utiles, séparés du texte, et des paragraphes respirables. "
+    "N'ajoute pas systématiquement des transitions ou des commentaires de narrateur. Développe « / », « & » ou une "
+    "abréviation évidente uniquement si son sens est certain ; ne développe pas un sigle technique non défini. Ne "
+    "change pas le registre technique. Corrige seulement les erreurs linguistiques manifestes et non ambiguës.\n\n"
+    "Exemples de distinction :\n"
+    "• « Le traitement (voir tableau 2) a duré 4 semaines. » → « Le traitement a duré 4 semaines. »\n"
+    "• « Cette mesure (prise au domicile) varie. » → conserver la précision entre parenthèses.\n"
+    "• « Le résultat serait associé au stress. » → garder « serait associé », sans renforcer l'affirmation.\n"
+    "• « Figure 1. La hausse atteint 12 % en hiver. » → retirer le titre et intégrer « La hausse atteint 12 % en hiver. »\n\n"
+    "Effectue silencieusement un bref contrôle de fidélité : aucune nuance, négation, donnée, attribution ou partie "
+    "substantielle ne doit avoir changé ou disparu, hormis les éléments éditoriaux explicitement indiqués. N'affiche "
+    "jamais ton raisonnement. Retourne uniquement le texte complet révisé, sans introduction, explication, balises "
+    "Markdown, commentaire ni liste de modifications."
+)
+INSTRUCTIONS_BY_MODE = {
+    CONSERVATIVE_MODE: DEFAULT_INSTRUCTION,
+    ORAL_ADAPTATION_MODE: ORAL_ADAPTATION_INSTRUCTION,
+}
 MAX_INPUT_CHARS = 120_000
 USER_AGENT = "TTSDocReader/1.0 (OpenAI-compatible client)"
 MIN_OUTPUT_RATIO = 0.45
@@ -135,8 +180,10 @@ def _remove_reasoning(text: str) -> str:
     return match.group(1)
 
 
-def propose_with_llm(text: str, instruction: str | None = None, *, base_url: str | None = None, model: str | None = None, api_key: str | None = None) -> str:
-    instruction = instruction or DEFAULT_INSTRUCTION
+def propose_with_llm(text: str, instruction: str | None = None, *, mode: str = CONSERVATIVE_MODE, base_url: str | None = None, model: str | None = None, api_key: str | None = None) -> str:
+    if mode not in INSTRUCTIONS_BY_MODE:
+        raise LLMError("Le mode de révision LLM est invalide.", 400)
+    instruction = instruction or INSTRUCTIONS_BY_MODE[mode]
     base_url = base_url or os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
     model = model or os.getenv("LLM_MODEL", "local-model")
     api_key = api_key if api_key is not None else os.getenv("LLM_API_KEY", "")

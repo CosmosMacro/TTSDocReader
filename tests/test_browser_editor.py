@@ -43,7 +43,7 @@ class BrowserEditorTests(unittest.TestCase):
 
     def test_fullscreen_editor_uses_available_space_and_cleanup_is_idempotent(self):
         page = self.browser.new_page(viewport={"width": 1280, "height": 720})
-        page.goto(f"http://127.0.0.1:{self.port}/audiobook")
+        page.goto(f"http://127.0.0.1:{self.port}/audiobook/legacy")
         page.evaluate(
             """() => {
                 current = {chapters: [{

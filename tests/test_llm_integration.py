@@ -6,7 +6,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 from app import config
-from app.llm import LLMError, build_endpoint, list_models, propose_with_llm, test_connection
+from app.llm import DEFAULT_INSTRUCTION, ORAL_ADAPTATION_INSTRUCTION, LLMError, build_endpoint, list_models, propose_with_llm, test_connection as llm_test_connection
 from app.main import app, settings
 from fastapi.testclient import TestClient
 
@@ -35,6 +35,27 @@ class LlmIntegrationTests(unittest.TestCase):
         self.assertIn("/api/settings/llm/test", AUDIOBOOK_HTML)
         self.assertIn("/api/settings/llm/models", AUDIOBOOK_HTML)
 
+    def test_modern_workspace_requests_oral_adaptation(self):
+        workspace = Path("app/static/workspace.js").read_text(encoding="utf-8")
+        self.assertIn("Adapter à l’oral", workspace)
+        self.assertIn("fd.append('mode','oral')", workspace)
+        self.assertIn("Adaptation à l’oral", workspace)
+        self.assertIn("Revue des modifications proposées", workspace)
+
+    def test_old_audiobook_url_serves_updated_workspace_and_cache_busted_script(self):
+        response = self.client.get("/audiobook/legacy")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Adapter à l’oral", response.text)
+        self.assertIn("fd.append('mode','oral')", response.text)
+        self.assertIn("Adaptation à l’oral", response.text)
+        self.assertNotIn("Proposition IA", response.text)
+        self.assertIn("#status.is-loading::before", response.text)
+        self.assertIn("aria-busy", response.text)
+        workspace = self.client.get("/audiobook")
+        self.assertEqual(workspace.status_code, 200)
+        self.assertIn('id="chapterList"', workspace.text)
+        self.assertIn("/static/workspace.js?v=oral-adaptation-2", workspace.text)
+
     def test_settings_test_endpoint_returns_provider_status_without_secret(self):
         with patch("app.main.test_connection", side_effect=LLMError("Échec d’authentification Groq (HTTP 401).", 401)):
             response = self.client.post("/api/settings/llm/test", data={"base_url": "https://api.groq.com/openai/v1", "model": "model", "api_key": "gsk_[REDACTED]"})
@@ -47,6 +68,30 @@ class LlmIntegrationTests(unittest.TestCase):
             response = self.client.post("/api/audiobook/llm-propose", data={"text": "texte"})
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.json()["provider_status"], 429)
+
+    def test_proposal_mode_defaults_to_conservative_and_accepts_oral(self):
+        with patch("app.main.propose_with_llm", return_value="texte") as proposer:
+            default_response = self.client.post("/api/audiobook/llm-propose", data={"text": "texte"})
+            oral_response = self.client.post("/api/audiobook/llm-propose", data={"text": "texte", "mode": "oral"})
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual(oral_response.status_code, 200)
+        self.assertEqual(proposer.call_args_list[0].kwargs["mode"], "conservative")
+        self.assertEqual(proposer.call_args_list[1].kwargs["mode"], "oral")
+
+    def test_oral_mode_uses_safeguarded_prompt_and_default_remains_conservative(self):
+        seen = []
+
+        def fake_urlopen(req, timeout):
+            seen.append(json.loads(req.data.decode("utf-8"))["messages"][0]["content"])
+            return FakeResponse({"choices": [{"message": {"content": "Texte révisé."}}]})
+
+        with patch("app.llm.request.urlopen", side_effect=fake_urlopen):
+            propose_with_llm("texte", base_url="http://local/v1", model="m")
+            propose_with_llm("texte", mode="oral", base_url="http://local/v1", model="m")
+        self.assertEqual(seen[0], DEFAULT_INSTRUCTION)
+        self.assertEqual(seen[1], ORAL_ADAPTATION_INSTRUCTION)
+        for safeguard in ("vocabulaire technique ou clinique", "citations directes", "N'ajoute aucun fait", "pas un résumé"):
+            self.assertIn(safeguard, ORAL_ADAPTATION_INSTRUCTION)
 
     def test_long_chapter_is_rejected_without_truncation(self):
         from app.llm import MAX_INPUT_CHARS
@@ -128,8 +173,8 @@ class LlmIntegrationTests(unittest.TestCase):
     def test_models_and_connection_validate_selected_model(self):
         with patch("app.llm.request.urlopen", return_value=FakeResponse({"data": [{"id": "model-x"}, {"id": "model-y"}]})):
             self.assertEqual(list_models("https://api.groq.com/openai/v1/", "gsk_[REDACTED]"), ["model-x", "model-y"])
-            self.assertTrue(test_connection("https://api.groq.com/openai/v1", "model-x", "gsk_[REDACTED]").model_available)
-            self.assertFalse(test_connection("https://api.groq.com/openai/v1", "missing", "gsk_[REDACTED]").model_available)
+            self.assertTrue(llm_test_connection("https://api.groq.com/openai/v1", "model-x", "gsk_[REDACTED]").model_available)
+            self.assertFalse(llm_test_connection("https://api.groq.com/openai/v1", "missing", "gsk_[REDACTED]").model_available)
 
     def test_settings_persist_without_exposing_key(self):
         with TemporaryDirectory() as tmp, patch.object(settings, "output_dir", tmp), patch.object(settings, "llm_api_key", "gsk_[REDACTED]"):
